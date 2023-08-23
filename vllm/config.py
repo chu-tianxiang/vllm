@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 from transformers import PretrainedConfig
+from auto_gptq import BaseQuantizeConfig
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import get_config
@@ -55,6 +56,10 @@ class ModelConfig:
         self.seed = seed
 
         self.hf_config = get_config(model, trust_remote_code)
+        try:
+            self.quantize_config = BaseQuantizeConfig.from_pretrained(model)
+        except:
+            self.quantize_config = None
         self.dtype = _get_and_verify_dtype(self.hf_config, dtype)
         self._verify_tokenizer_mode()
 

@@ -229,6 +229,8 @@ class LlamaModel(nn.Module):
 
 
 class LlamaForCausalLM(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["model.embed_tokens", "model.norm"]
 
     def __init__(self, config):
         super().__init__()
@@ -301,11 +303,23 @@ class LlamaForCausalLM(nn.Module):
                 if weight_name not in name:
                     continue
                 param = state_dict[name.replace(weight_name, "qkv_proj")]
-
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
-                param_slice = param.data[offset:offset + shard_size]
+                if "g_idx" in name:
+                    param.data.copy_(loaded_weight)
+                    is_attention_weight = True
+                    continue
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    if 'qzeros' in name:
+                        shard_size = shard_size // 32 * self.quantize_config.bits
+                        offset = offset // 32 * self.quantize_config.bits
+                    loaded_weight = loaded_weight[:,
+                        shard_size * tensor_model_parallel_rank:shard_size *
+                        (tensor_model_parallel_rank + 1)]
+                    param_slice = param.data[:, offset:offset + shard_size]
+                else:
+                    loaded_weight = loaded_weight[
+                        shard_size * tensor_model_parallel_rank:shard_size *
+                        (tensor_model_parallel_rank + 1)]
+                    param_slice = param.data[offset:offset + shard_size]
                 assert param_slice.shape == loaded_weight.shape
 
                 param_slice.copy_(loaded_weight)
@@ -319,12 +333,24 @@ class LlamaForCausalLM(nn.Module):
                 if weight_name not in name:
                     continue
                 param = state_dict[name.replace(weight_name, "gate_up_proj")]
-                shard_size = param.shape[0] // 2
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
-                param_slice = param.data[shard_size * stride_id:shard_size *
-                                         (stride_id + 1)]
+                if "g_idx" in name:
+                    param.data.copy_(loaded_weight)
+                    is_gate_up_weight = True
+                    continue
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    shard_size = param.shape[1] // 2
+                    loaded_weight = loaded_weight[:,
+                        shard_size * tensor_model_parallel_rank:shard_size *
+                        (tensor_model_parallel_rank + 1)]
+                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
+                else:
+                    shard_size = param.shape[0] // 2
+                    loaded_weight = loaded_weight[
+                        shard_size * tensor_model_parallel_rank:shard_size *
+                        (tensor_model_parallel_rank + 1)]
+                    param_slice = param.data[shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)
                 is_gate_up_weight = True

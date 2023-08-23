@@ -9,6 +9,7 @@ from huggingface_hub import snapshot_download
 import numpy as np
 import torch
 from tqdm.auto import tqdm
+from safetensors.torch import safe_open
 
 
 class Disabledtqdm(tqdm):
@@ -33,7 +34,7 @@ def hf_model_weights_iterator(
     if not is_local:
         with lock:
             hf_folder = snapshot_download(model_name_or_path,
-                                          allow_patterns="*.bin",
+                                          allow_patterns=["*.bin", "*.safetensors"],
                                           cache_dir=cache_dir,
                                           tqdm_class=Disabledtqdm)
     else:
@@ -43,8 +44,19 @@ def hf_model_weights_iterator(
         x for x in glob.glob(os.path.join(hf_folder, "*.bin"))
         if not x.endswith("training_args.bin")
     ]
+    safetensor_files = [
+        x for x in glob.glob(os.path.join(hf_folder, "*.safetensors"))
+    ]
 
-    if use_np_cache:
+    # prioritize safetensor files
+    if safetensor_files:
+        for st_file in safetensor_files:
+            with safe_open(st_file, framework="pt") as f:
+                for name in f.keys():
+                    param = f.get_tensor(name)
+                    yield name, param
+            torch.cuda.empty_cache()
+    elif use_np_cache:
         # Convert the model weights from torch tensors to numpy arrays for
         # faster loading.
         np_folder = os.path.join(hf_folder, "np")
