@@ -55,6 +55,7 @@ def make_quant(
         name1 = name + '.' + attr if name != '' else attr
         if name1 in names:
             delattr(module, attr)
+            quant_class = QuantLinear
             if isinstance(tmp, nn.Linear):
                 in_features = tmp.in_features
                 out_features = tmp.out_features
@@ -67,12 +68,13 @@ def make_quant(
             elif isinstance(tmp, ColumnParallelLinear) or isinstance(tmp, RowParallelLinear):
                 in_features = tmp.input_size
                 out_features = tmp.output_size
+                quant_class = QuantLinearWrapper
             if (not(desc_act) or group_size == -1) and not use_triton:
-                new_layer = QuantLinearWrapper(
+                new_layer = quant_class(
                     bits, group_size, in_features, out_features, True, use_cuda_fp16=use_cuda_fp16, trainable=trainable
                 )
             else:
-                new_layer = QuantLinearWrapper(bits, group_size, in_features, out_features, True, trainable=trainable)
+                new_layer = quant_class(bits, group_size, in_features, out_features, True, trainable=trainable)
             setattr(module, attr, new_layer)
     for name1, child in module.named_children():
         make_quant(
