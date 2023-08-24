@@ -224,8 +224,9 @@ class Worker:
 
         # Optimization: Pad the input length to be a multiple of 8.
         # This is required for utilizing the Tensor Cores in NVIDIA GPUs.
-        input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
-        input_positions = _pad_to_alignment(input_positions, multiple_of=8)
+        if self.model_config.quantize_config is None:
+            input_tokens = _pad_to_alignment(input_tokens, multiple_of=8)
+            input_positions = _pad_to_alignment(input_positions, multiple_of=8)
 
         # Convert to tensors.
         tokens_tensor = torch.cuda.LongTensor(input_tokens)
