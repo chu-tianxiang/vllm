@@ -247,7 +247,8 @@ class BloomModel(nn.Module):
 
 
 class BloomForCausalLM(nn.Module):
-
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.word_embeddings", "transformer.word_embeddings_layernorm", "transformer.ln_f"]
     def __init__(self, config: BloomConfig):
         super().__init__()
         self.config = config
@@ -300,15 +301,25 @@ class BloomForCausalLM(nn.Module):
                 # [num_heads * 3 * head_size, hidden_size], while the
                 # required shape is [3 * num_heads * head_size, hidden_size].
                 # Thus, we need weight conversion.
-                shard_size = param.shape[0]
+                shard_size = param.shape[0] if not any(key in name for key in (
+                    'qweight', 'qzeros', 'scales')) else param.shape[1]
                 start = shard_size * tp_rank
                 end = shard_size * (tp_rank + 1)
-                loaded_weight = loaded_weight[start:end]
+                if "g_idx" not in name:
+                    loaded_weight = loaded_weight[start:end]
 
                 num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // num_heads
-                if "query_key_value.weight" in name:
+                if 'qzeros' in name:
+                    head_size = head_size // 32 * self.quantize_config.bits
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1, 3, head_size)
+                    loaded_weight = loaded_weight.transpose(1, 2)
+                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+
+                elif "query_key_value.weight" in name:
+
                     loaded_weight = loaded_weight.view(-1, 3, head_size,
                                                        hidden_size)
                     loaded_weight = loaded_weight.transpose(0, 1)
@@ -317,8 +328,6 @@ class BloomForCausalLM(nn.Module):
                     loaded_weight = loaded_weight.view(-1, 3, head_size)
                     loaded_weight = loaded_weight.transpose(0, 1)
                     loaded_weight = loaded_weight.reshape(-1)
-                else:
-                    raise ValueError(f"Unexpected weight name: {name}")
             load_tensor_parallel_weights(param, loaded_weight, name,
                                          self._column_parallel_weights,
                                          self._row_parallel_weights, tp_rank)

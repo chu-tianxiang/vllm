@@ -196,7 +196,8 @@ class GPTBigCodeModel(nn.Module):
         # is divisible by 64. In addition, it allows us to shard the embedding
         # layer across 2, 4, 8, or more GPUs.
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim,
+                                          perform_initialization=False)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList(
             [GPTBigCodeBlock(config) for _ in range(config.num_hidden_layers)])
@@ -228,6 +229,8 @@ class GPTBigCodeModel(nn.Module):
 
 
 class GPTBigCodeForCausalLM(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.wpe", "transformer.wte", "transformer.ln_f"]
 
     def __init__(self, config: GPTBigCodeConfig):
         super().__init__()
@@ -259,6 +262,8 @@ class GPTBigCodeForCausalLM(nn.Module):
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
                      use_np_cache: bool = False):
+        tensor_model_parallel_world_size = (
+            get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
@@ -282,32 +287,51 @@ class GPTBigCodeForCausalLM(nn.Module):
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor parallelism is used, we shard the weights along
                 # the head dimension.
+                if "g_idx" in name:
+                    if self.config.multi_query:
+                        q_idx_name = name.replace("c_attn", "c_attn_q")
+                        kv_idx_name = name.replace("c_attn", "c_attn_kv")
+                        state_dict[q_idx_name].data.copy_(loaded_weight)
+                        state_dict[kv_idx_name].data.copy_(loaded_weight)
+                    else:
+                        state_dict[name].data.copy_(loaded_weight)
+                    continue
                 total_num_heads = self.config.num_attention_heads
                 total_num_kv_heads = (1 if self.config.multi_query else
                                       total_num_heads)
                 hidden_size = self.config.hidden_size
+                if 'qzeros' in name:
+                    hidden_size = hidden_size // 32 * self.quantize_config.bits
                 head_size = hidden_size // total_num_heads
                 total_kv_size = head_size * total_num_kv_heads
-                num_heads = (total_num_heads //
-                             self.tensor_model_parallel_world_size)
+                num_heads = total_num_heads // tensor_model_parallel_world_size
                 head_start = tensor_model_parallel_rank * num_heads
                 head_end = (tensor_model_parallel_rank + 1) * num_heads
 
+                dim = 1 if any(key in name for key in ('qweight', 'qzeros',
+                                                       'scales')) else 0
                 wq, wk, wv = torch.split(
                     loaded_weight, [hidden_size, total_kv_size, total_kv_size],
-                    dim=0)
+                    dim=dim)
 
-                wq = wq[head_size * head_start:head_size * head_end]
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    wq = wq[:, head_size * head_start:head_size * head_end]
+                else:
+                    wq = wq[head_size * head_start:head_size * head_end]
                 if not self.config.multi_query:
                     # Split the heads when using normal multi-head attention
-                    wk = wk[head_size * head_start:head_size * head_end]
-                    wv = wv[head_size * head_start:head_size * head_end]
-                    loaded_weight = torch.cat([wq, wk, wv], dim=0)
+                    if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                        wk = wk[:, head_size * head_start:head_size * head_end]
+                        wv = wv[:, head_size * head_start:head_size * head_end]
+                    else:
+                        wk = wk[head_size * head_start:head_size * head_end]
+                        wv = wv[head_size * head_start:head_size * head_end]
+                    loaded_weight = torch.cat([wq, wk, wv], dim=dim)
                 else:
                     # For multi-query attention, we split the query
                     # but replicate the key and value.
                     loaded_weight_q = wq
-                    loaded_weight_kv = torch.cat([wk, wv], dim=0)
+                    loaded_weight_kv = torch.cat([wk, wv], dim=dim)
                     q_weight_name = name.replace("c_attn", "c_attn_q")
                     kv_weight_name = name.replace("c_attn", "c_attn_kv")
                     load_tensor_parallel_weights(state_dict[q_weight_name],
@@ -329,7 +353,7 @@ class GPTBigCodeForCausalLM(nn.Module):
             if name == "transformer.wte.weight":
                 # Consider padding in the vocab size.
                 padded_vocab_size = param.shape[
-                    0] * self.tensor_model_parallel_world_size
+                    0] * tensor_model_parallel_world_size
                 num_extra_rows = padded_vocab_size - self.config.vocab_size
                 extra_rows = torch.empty(num_extra_rows,
                                          loaded_weight.shape[1])

@@ -184,6 +184,8 @@ class GPTJModel(nn.Module):
 
 
 class GPTJForCausalLM(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.wte", "transformer.ln_f"]
 
     def __init__(self, config: GPTJConfig):
         super().__init__()
@@ -233,11 +235,22 @@ class GPTJForCausalLM(nn.Module):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]
-                shard_size = param.shape[1]
-                loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
-                                              (tp_rank + 1)]
-                param_slice = param.data[shard_size * stride_id:shard_size *
-                                         (stride_id + 1)]
+                if "g_idx" in name:
+                    param.data.copy_(loaded_weight)
+                    is_attention_weight = True
+                    continue
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    shard_size = param.shape[1] // 3
+                    loaded_weight = loaded_weight[:,
+                        shard_size * tp_rank:shard_size * (tp_rank + 1)]
+                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
+                else:
+                    shard_size = param.shape[0] // 3
+                    loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                                                  (tp_rank + 1)]
+                    param_slice = param.data[shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)
                 is_attention_weight = True

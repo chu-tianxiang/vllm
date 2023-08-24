@@ -212,6 +212,8 @@ class QWenModel(nn.Module):
 
 
 class QWenLMHeadModel(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.wte", "transformer.ln_f"]
 
     def __init__(self, config: QWenConfig):
         super().__init__()
@@ -277,7 +279,13 @@ class QWenLMHeadModel(nn.Module):
                 head_start = tp_rank * num_heads
                 head_end = (tp_rank + 1) * num_heads
 
-                if "weight" in name:
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0], 3,
+                                                       total_num_heads, -1)
+                    loaded_weight = loaded_weight[:, :, head_start:head_end, :]
+                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+
+                elif "weight" in name:
                     loaded_weight = loaded_weight.view(3, total_num_heads,
                                                        head_size, hidden_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :, :]
@@ -293,11 +301,22 @@ class QWenLMHeadModel(nn.Module):
                 if weight_name not in name:
                     continue
                 param = state_dict[name.replace(weight_name, "gate_up_proj")]
-                shard_size = param.shape[0] // 2
-                loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
-                                              (tp_rank + 1)]
-                param_slice = param.data[shard_size * stride_id:shard_size *
-                                         (stride_id + 1)]
+                if "g_idx" in name:
+                    param.data.copy_(loaded_weight)
+                    is_gate_up_weight = True
+                    continue
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    shard_size = param.shape[1] // 2
+                    loaded_weight = loaded_weight[:,
+                        shard_size * tp_rank:shard_size * (tp_rank + 1)]
+                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
+                else:
+                    shard_size = param.shape[0] // 2
+                    loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                                                  (tp_rank + 1)]
+                    param_slice = param.data[shard_size * stride_id:shard_size *
+                                             (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)
                 is_gate_up_weight = True

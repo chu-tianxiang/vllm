@@ -378,6 +378,8 @@ class FalconModel(nn.Module):
 
 
 class FalconForCausalLM(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.word_embeddings", "transformer.ln_f"]
 
     def __init__(self, config: FalconConfig):
         super().__init__()
@@ -454,23 +456,42 @@ class FalconForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, use_np_cache):
             if "query_key_value" in name:
                 loaded_weight_size = loaded_weight.size()
-                loaded_weight = loaded_weight.view(
-                    total_num_kv_heads, num_query_heads_per_kv_head + 2,
-                    head_size, *loaded_weight_size[1:])
+                if "g_idx" in name:
+                    if separated_q_kv:
+                        q_idx_name = name.replace("query_key_value", "query")
+                        kv_idx_name = name.replace("query_key_value",
+                                                   "key_value")
+                        state_dict[q_idx_name].data.copy_(loaded_weight)
+                        state_dict[kv_idx_name].data.copy_(loaded_weight)
+                    else:
+                        state_dict[name].data.copy_(loaded_weight)
+                    continue
+                elif any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    loaded_weight = loaded_weight.view(loaded_weight_size[0],
+                        total_num_kv_heads, num_query_heads_per_kv_head + 2, -1)
+                    wq = loaded_weight[:, kv_head_start:kv_head_end, :-2].reshape(loaded_weight_size[0], -1)
+                    wk = loaded_weight[:, kv_head_start:kv_head_end, [-2]].reshape(loaded_weight_size[0], -1)
+                    wv = loaded_weight[:, kv_head_start:kv_head_end, [-1]].reshape(loaded_weight_size[0], -1)
+                    dim = 1
+                else:
+                    loaded_weight = loaded_weight.view(
+                        total_num_kv_heads, num_query_heads_per_kv_head + 2,
+                        head_size, *loaded_weight_size[1:])
 
-                wq = loaded_weight[:, :-2].reshape(-1, *loaded_weight_size[1:])
-                wk = loaded_weight[:, [-2]].reshape(-1,
-                                                    *loaded_weight_size[1:])
-                wv = loaded_weight[:, [-1]].reshape(-1,
-                                                    *loaded_weight_size[1:])
+                    wq = loaded_weight[:, :-2].reshape(-1, *loaded_weight_size[1:])
+                    wk = loaded_weight[:, [-2]].reshape(-1,
+                                                        *loaded_weight_size[1:])
+                    wv = loaded_weight[:, [-1]].reshape(-1,
+                                                        *loaded_weight_size[1:])
 
-                wq = wq[head_size * head_start:head_size * head_end]
-                wk = wk[head_size * kv_head_start:head_size * kv_head_end]
-                wv = wv[head_size * kv_head_start:head_size * kv_head_end]
+                    wq = wq[head_size * head_start:head_size * head_end]
+                    wk = wk[head_size * kv_head_start:head_size * kv_head_end]
+                    wv = wv[head_size * kv_head_start:head_size * kv_head_end]
+                    dim = 0
 
                 if separated_q_kv:
                     loaded_weight_q = wq
-                    loaded_weight_kv = torch.cat([wk, wv], dim=0)
+                    loaded_weight_kv = torch.cat([wk, wv], dim=dim)
                     q_weight_name = name.replace("query_key_value", "query")
                     kv_weight_name = name.replace("query_key_value",
                                                   "key_value")
@@ -488,7 +509,7 @@ class FalconForCausalLM(nn.Module):
                                                  tp_rank)
                     continue
                 else:
-                    loaded_weight = torch.cat([wq, wk, wv], dim=0)
+                    loaded_weight = torch.cat([wq, wk, wv], dim=dim)
 
             param = state_dict[name]
             load_tensor_parallel_weights(param, loaded_weight, name,

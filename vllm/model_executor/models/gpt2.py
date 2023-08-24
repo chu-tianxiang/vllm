@@ -168,7 +168,8 @@ class GPT2Model(nn.Module):
         # is divisible by 64. In addition, it allows us to shard the embedding
         # layer across 2, 4, 8, or more GPUs.
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim,
+                                          perform_initialization=False)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList(
             [GPT2Block(config) for _ in range(config.num_hidden_layers)])
@@ -200,6 +201,8 @@ class GPT2Model(nn.Module):
 
 
 class GPT2LMHeadModel(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["transformer.wte", "transformer.wpe", "transformer.ln_f"]
 
     def __init__(self, config: GPT2Config):
         super().__init__()
@@ -282,8 +285,12 @@ class GPT2LMHeadModel(nn.Module):
                 num_heads = total_num_heads // tensor_model_parallel_world_size
                 head_start = tensor_model_parallel_rank * num_heads
                 head_end = (tensor_model_parallel_rank + 1) * num_heads
-
-                if name.endswith(".weight"):
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
+                                                       3, total_num_heads, -1)
+                    loaded_weight = loaded_weight[:, :, head_start:head_end, :]
+                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+                elif name.endswith(".weight"):
                     loaded_weight = loaded_weight.view(3, total_num_heads,
                                                        head_size, hidden_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :, :]
@@ -293,8 +300,6 @@ class GPT2LMHeadModel(nn.Module):
                                                        head_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :]
                     loaded_weight = loaded_weight.reshape(-1)
-                else:
-                    raise ValueError(f"Unexpected parameter name {name}")
             load_tensor_parallel_weights(param, loaded_weight, name,
                                          self._column_parallel_weights,
                                          self._row_parallel_weights,

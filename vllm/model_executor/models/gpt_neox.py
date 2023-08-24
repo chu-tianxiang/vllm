@@ -196,6 +196,8 @@ class GPTNeoXModel(nn.Module):
 
 
 class GPTNeoXForCausalLM(nn.Module):
+    lm_head_name = "lm_head"
+    outside_layer_modules = ["gpt_neox.embed_in", "gpt_neox.final_layer_norm"]
 
     def __init__(self, config):
         super().__init__()
@@ -245,15 +247,25 @@ class GPTNeoXForCausalLM(nn.Module):
                 # [num_heads * 3 * head_size, hidden_size], while the
                 # required shape is [3 * num_heads * head_size, hidden_size].
                 # Thus, we need weight conversion.
-                shard_size = param.shape[0]
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
+                shard_size = param.shape[0] if not any(key in name for key in (
+                    'qweight', 'qzeros', 'scales')) else param.shape[1]
+                start = shard_size * tensor_model_parallel_rank
+                end = shard_size * (tensor_model_parallel_rank + 1)
+                if "g_idx" not in name:
+                    loaded_weight = loaded_weight[start:end]
 
                 num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // num_heads
-                if "query_key_value.weight" in name:
+                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                    if 'qzeros' in name:
+                        head_size = head_size // 32 * self.quantize_config.bits
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1,
+                                                       3, head_size)
+                    loaded_weight = loaded_weight.transpose(1, 2)
+                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+
+                elif "query_key_value.weight" in name:
                     loaded_weight = loaded_weight.view(-1, 3, head_size,
                                                        hidden_size)
                     loaded_weight = loaded_weight.transpose(0, 1)
