@@ -260,7 +260,10 @@ class LlamaForCausalLM(nn.Module):
 
     _column_parallel_weights = [
         "embed_tokens.weight", "lm_head.weight", "qkv_proj.weight",
-        "gate_proj.weight", "up_proj.weight"
+        "gate_proj.weight", "up_proj.weight", "o_proj.g_idx",
+        "down_proj.g_idx", "o_proj.qweight", "down_proj.qweight",
+        "o_proj.qzeros", "o_proj.scales", "down_proj.scales",
+        "down_proj.qzeros"
     ]
     _row_parallel_weights = ["o_proj.weight", "down_proj.weight"]
 

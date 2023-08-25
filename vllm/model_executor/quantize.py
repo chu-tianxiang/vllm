@@ -8,6 +8,14 @@ import transformers
 
 from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
 
+from vllm.model_executor.parallel_utils.parallel_state import (
+    get_tensor_model_parallel_world_size,
+)
+from vllm.model_executor.parallel_utils.tensor_parallel.mappings import (
+    gather_from_tensor_model_parallel_region,
+    reduce_from_tensor_model_parallel_region,
+    scatter_to_tensor_model_parallel_region,
+)
 from vllm.model_executor.parallel_utils.tensor_parallel.layers import (
     ColumnParallelLinear,
     RowParallelLinear,
@@ -44,9 +52,60 @@ def make_quant(
 ) -> None:
     QuantLinear = dynamically_import_QuantLinear(use_triton=use_triton, desc_act=desc_act, group_size=group_size, bits=bits, disable_exllama=disable_exllama)
 
-    class QuantLinearWrapper(QuantLinear):
-        def forward(self, *args, **kwargs):
-            return super().forward(*args, **kwargs), None
+    class ColumnParallelQuantLinear(QuantLinear):
+        def __init__(
+            self,
+            bits,
+            group_size,
+            infeatures,
+            outfeatures,
+            bias,
+            gather_output=True,
+            **kwargs
+        ):
+            self.gather_output = gather_output
+            world_size = get_tensor_model_parallel_world_size()
+            super().__init__(bits, group_size, infeatures,
+                             outfeatures // world_size, bias, **kwargs)
+
+        def forward(self, input_):
+            output_parallel = super().forward(input_)
+            if self.gather_output:
+                # All-gather across the partitions.
+                output = gather_from_tensor_model_parallel_region(output_parallel)
+            else:
+                output = output_parallel
+            return output, None
+
+    class RowParallelQuantLinear(QuantLinear):
+        def __init__(
+            self,
+            bits,
+            group_size,
+            infeatures,
+            outfeatures,
+            bias,
+            input_is_parallel=False,
+            reduce_results=True,
+            **kwargs
+        ):
+            self.input_is_parallel = input_is_parallel
+            self.reduce_results = reduce_results
+            self.world_size = get_tensor_model_parallel_world_size()
+            super().__init__(bits, group_size, infeatures // self.world_size,
+                             outfeatures, bias, **kwargs)
+
+        def forward(self, input_):
+            if self.input_is_parallel:
+                input_parallel = input_
+            else:
+                input_parallel = scatter_to_tensor_model_parallel_region(input_)
+            output_parallel = super().forward(input_parallel)
+            if self.reduce_results and self.world_size > 1:
+                output = reduce_from_tensor_model_parallel_region(output_parallel)
+            else:
+                output = output_parallel
+            return output, None
 
     if isinstance(module, QuantLinear):
         return
@@ -56,6 +115,7 @@ def make_quant(
         if name1 in names:
             delattr(module, attr)
             quant_class = QuantLinear
+            kwargs = {"trainable": trainable}
             if isinstance(tmp, nn.Linear):
                 in_features = tmp.in_features
                 out_features = tmp.out_features
@@ -65,16 +125,21 @@ def make_quant(
             elif isinstance(tmp, transformers.pytorch_utils.Conv1D):
                 in_features = tmp.weight.shape[0]
                 out_features = tmp.weight.shape[1]
-            elif isinstance(tmp, ColumnParallelLinear) or isinstance(tmp, RowParallelLinear):
+            elif isinstance(tmp, ColumnParallelLinear):
                 in_features = tmp.input_size
                 out_features = tmp.output_size
-                quant_class = QuantLinearWrapper
+                quant_class = ColumnParallelQuantLinear
+                kwargs.update({"gather_output": tmp.gather_output})
+            elif isinstance(tmp, RowParallelLinear):
+                in_features = tmp.input_size
+                out_features = tmp.output_size
+                quant_class = RowParallelQuantLinear
+                kwargs.update({"input_is_parallel": tmp.input_is_parallel,
+                               "reduce_results": tmp.reduce_results})
             if (not(desc_act) or group_size == -1) and not use_triton:
-                new_layer = quant_class(
-                    bits, group_size, in_features, out_features, True, use_cuda_fp16=use_cuda_fp16, trainable=trainable
-                )
-            else:
-                new_layer = quant_class(bits, group_size, in_features, out_features, True, trainable=trainable)
+                kwargs["use_cuda_fp16"] = use_cuda_fp16
+            new_layer = quant_class(bits, group_size, in_features, out_features, True,
+                                    **kwargs)
             setattr(module, attr, new_layer)
     for name1, child in module.named_children():
         make_quant(
