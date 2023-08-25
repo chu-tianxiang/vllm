@@ -291,6 +291,11 @@ class LlamaForCausalLM(nn.Module):
             if "rotary_emb.inv_freq" in name:
                 continue
 
+            if any(key in name for key in ('o_proj.qzeros', 'o_proj.scales',
+                                           'down_proj.qzeros', 'down_proj.scales')
+                  ) and self.quantize_config.group_size == -1:
+                loaded_weight = loaded_weight.expand(tp_size, -1)
+
             if "embed_tokens" in name or "lm_head" in name:
                 param = state_dict[name]
                 # Consider padding in the vocab size.
