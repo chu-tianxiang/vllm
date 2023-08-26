@@ -69,7 +69,7 @@ def make_quant(
                              outfeatures // world_size, bias, **kwargs)
 
         def forward(self, input_):
-            output_parallel = super().forward(input_)
+            output_parallel = super().forward(input_).to(input_.dtype)
             if self.gather_output:
                 # All-gather across the partitions.
                 output = gather_from_tensor_model_parallel_region(output_parallel)
@@ -100,7 +100,7 @@ def make_quant(
                 input_parallel = input_
             else:
                 input_parallel = scatter_to_tensor_model_parallel_region(input_)
-            output_parallel = super().forward(input_parallel)
+            output_parallel = super().forward(input_parallel).to(input_.dtype)
             if self.reduce_results and self.world_size > 1:
                 output = reduce_from_tensor_model_parallel_region(output_parallel)
             else:
@@ -126,7 +126,7 @@ def make_quant(
             # All-gather across the partitions.
             if self.input_is_parallel:
                 input_ = gather_from_tensor_model_parallel_region(input_)
-            output = super().forward(input_)
+            output = super().forward(input_).to(input_.dtype)
             return output, None
 
     if isinstance(module, QuantLinear):
