@@ -6,6 +6,7 @@ import torch.nn as nn
 from accelerate import init_on_device
 from transformers import PretrainedConfig
 from auto_gptq.modeling._utils import autogptq_post_init
+from auto_gptq import exllama_set_max_input_length
 
 from vllm.config import ModelConfig
 from vllm.model_executor.models import *  # pylint: disable=wildcard-import
@@ -43,7 +44,7 @@ def _get_model_architecture(config: PretrainedConfig) -> Type[nn.Module]:
         f"Supported architectures: {list(_MODEL_REGISTRY.keys())}")
 
 
-def get_model(model_config: ModelConfig) -> nn.Module:
+def get_model(model_config: ModelConfig, max_tokens: int) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
     torch.set_default_dtype(model_config.dtype)
 
@@ -65,9 +66,9 @@ def get_model(model_config: ModelConfig) -> nn.Module:
             model_config.quantize_config.group_size,
             desc_act=model_config.quantize_config.desc_act,
         )
-        model.quantize_config = model_config.quantize_config
     else:
         model = model_class(model_config.hf_config)
+    model.quantize_config = model_config.quantize_config
     if model_config.use_dummy_weights:
         model = model.cuda()
         # NOTE(woosuk): For accurate performance evaluation, we assign
@@ -80,4 +81,6 @@ def get_model(model_config: ModelConfig) -> nn.Module:
         model = model.cuda()
     if model_config.quantize_config:
         model = autogptq_post_init(model, use_act_order=model_config.quantize_config.desc_act)
+        if model_config.quantize_config.desc_act:
+            model = exllama_set_max_input_length(model, max_tokens)
     return model.eval()

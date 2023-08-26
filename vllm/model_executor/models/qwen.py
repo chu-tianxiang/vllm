@@ -243,8 +243,7 @@ class QWenLMHeadModel(nn.Module):
                                    input_metadata)
         return next_tokens
 
-    _column_parallel_weights = ["wte.weight", "lm_head.weight", "c_proj.qzeros",
-         "c_proj.qweight", "c_proj.g_idx", "c_proj.scales"]
+    _column_parallel_weights = ["wte.weight", "lm_head.weight"]
     _row_parallel_weights = ["c_proj.weight"]
 
     def load_weights(
@@ -257,14 +256,16 @@ class QWenLMHeadModel(nn.Module):
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["c_proj.qweight", "c_proj.g_idx"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["c_proj.qzeros", "c_proj.scales"])
+
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):
             if "rotary_emb.inv_freq" in name:
                 continue
-
-            if any(key in name for key in ('c_proj.qzeros', 'c_proj.scales')
-                  ) and self.quantize_config.group_size == -1:
-                loaded_weight = loaded_weight.expand(tp_world_size, -1)
 
             if "wte" in name or "lm_head" in name:
                 # Consider padding in the vocab size.

@@ -228,7 +228,8 @@ class GPT2LMHeadModel(nn.Module):
         return next_tokens
 
     _column_parallel_weights = ["wte.weight", "c_fc.weight", "c_fc.bias"]
-    _row_parallel_weights = ["c_proj.weight"]
+    _row_parallel_weights = ["c_proj.weight", "c_fc.qweight", "c_fc.scales",
+                             "c_fc.qzeros"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -238,6 +239,12 @@ class GPT2LMHeadModel(nn.Module):
             get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
+
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["c_proj.g_idx", "c_proj.qweight"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["c_proj.qzeros", "c_proj.scales"])
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):
@@ -261,6 +268,10 @@ class GPT2LMHeadModel(nn.Module):
                 if not name.endswith(".weight"):
                     continue
                 loaded_weight = loaded_weight.t()
+
+            if "c_proj.bias" in name and self.quantize_config is not None and (
+                    not self.quantize_config.desc_act):
+                loaded_weight = loaded_weight / tensor_model_parallel_world_size
             param = state_dict[name]
 
             if name == "transformer.wte.weight":

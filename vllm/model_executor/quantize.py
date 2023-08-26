@@ -107,6 +107,28 @@ def make_quant(
                 output = output_parallel
             return output, None
 
+
+    class GatherQuantLinear(QuantLinear):
+        def __init__(
+            self,
+            bits,
+            group_size,
+            infeatures,
+            outfeatures,
+            bias,
+            input_is_parallel=False,
+            **kwargs
+        ):
+            self.input_is_parallel = input_is_parallel
+            super().__init__(bits, group_size, infeatures, outfeatures, bias, **kwargs)
+
+        def forward(self, input_):
+            # All-gather across the partitions.
+            if self.input_is_parallel:
+                input_ = gather_from_tensor_model_parallel_region(input_)
+            output = super().forward(input_)
+            return output, None
+
     if isinstance(module, QuantLinear):
         return
     for attr in dir(module):
@@ -133,9 +155,13 @@ def make_quant(
             elif isinstance(tmp, RowParallelLinear):
                 in_features = tmp.input_size
                 out_features = tmp.output_size
-                quant_class = RowParallelQuantLinear
-                kwargs.update({"input_is_parallel": tmp.input_is_parallel,
-                               "reduce_results": tmp.reduce_results})
+                if not desc_act or group_size == -1:
+                    quant_class = RowParallelQuantLinear
+                    kwargs.update({"input_is_parallel": tmp.input_is_parallel,
+                                   "reduce_results": tmp.reduce_results})
+                else:
+                    quant_class = GatherQuantLinear
+                    kwargs.update({"input_is_parallel": tmp.input_is_parallel})
             if (not(desc_act) or group_size == -1) and not use_triton:
                 kwargs["use_cuda_fp16"] = use_cuda_fp16
             new_layer = quant_class(bits, group_size, in_features, out_features, True,

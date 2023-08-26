@@ -260,10 +260,7 @@ class LlamaForCausalLM(nn.Module):
 
     _column_parallel_weights = [
         "embed_tokens.weight", "lm_head.weight", "qkv_proj.weight",
-        "gate_proj.weight", "up_proj.weight", "o_proj.g_idx",
-        "down_proj.g_idx", "o_proj.qweight", "down_proj.qweight",
-        "o_proj.qzeros", "o_proj.scales", "down_proj.scales",
-        "down_proj.qzeros"
+        "gate_proj.weight", "up_proj.weight"
     ]
     _row_parallel_weights = ["o_proj.weight", "down_proj.weight"]
 
@@ -277,6 +274,13 @@ class LlamaForCausalLM(nn.Module):
         kv_proj_shard_size = (self.config.hidden_size //
                               self.config.num_attention_heads *
                               self.config.num_key_value_heads // tp_size)
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["o_proj.g_idx", "down_proj.g_idx",
+                                                      "o_proj.qweight", "down_proj.qweight"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["o_proj.qzeros", "o_proj.scales",
+                                                      "down_proj.scales", "down_proj.qzeros"])
         attention_weight_specs = [
             # (weight_name, shard_size, offset)
             ("q_proj", q_proj_shard_size, 0),
@@ -290,11 +294,6 @@ class LlamaForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, use_np_cache):
             if "rotary_emb.inv_freq" in name:
                 continue
-
-            if any(key in name for key in ('o_proj.qzeros', 'o_proj.scales',
-                                           'down_proj.qzeros', 'down_proj.scales')
-                  ) and self.quantize_config.group_size == -1:
-                loaded_weight = loaded_weight.expand(tp_size, -1)
 
             if "embed_tokens" in name or "lm_head" in name:
                 param = state_dict[name]
