@@ -306,8 +306,8 @@ class BloomForCausalLM(nn.Module):
                     name = "transformer." + name
                 param = state_dict[name]
 
-            if ("dense.bias" in name or "dense_4h_to_h.bias" in name) and (
-                    self.quantize_config is not None) and not self.quantize_config.desc_act:
+            if ("dense.bias" in name or "dense_4h_to_h.bias" in name) and self.quantize_config is not None and (
+                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tp_world_size
 
             if "query_key_value" in name:

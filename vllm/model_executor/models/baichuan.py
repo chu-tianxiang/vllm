@@ -310,6 +310,13 @@ class BaiChuanBaseForCausalLM(nn.Module):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["o_proj.g_idx", "down_proj.g_idx",
+                                                      "o_proj.qweight", "down_proj.qweight"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["o_proj.qzeros", "o_proj.scales",
+                                                      "down_proj.scales", "down_proj.qzeros"])
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):

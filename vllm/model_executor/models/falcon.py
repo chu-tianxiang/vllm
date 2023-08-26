@@ -416,7 +416,8 @@ class FalconForCausalLM(nn.Module):
         "word_embeddings.weight", "lm_head.weight", "dense_h_to_4h.weight",
         "dense_h_to_4h.bias"
     ]
-    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight"]
+    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
+                             "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -424,6 +425,13 @@ class FalconForCausalLM(nn.Module):
                      use_np_cache: bool = False):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["dense.g_idx", "dense_4h_to_h.g_idx",
+                                                      "dense.qweight", "dense_4h_to_h.qweight"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["dense.qzeros", "dense_4h_to_h.qzeros",
+                                                      "dense.scales", "dense_4h_to_h.scales"])
 
         hidden_size = self.config.hidden_size
         total_num_heads = self.config.num_attention_heads
@@ -454,6 +462,9 @@ class FalconForCausalLM(nn.Module):
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):
+            if ("dense.bias" in name or "dense_4h_to_h.bias" in name) and self.quantize_config is not None and (
+                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+                loaded_weight = loaded_weight / tp_size
             if "query_key_value" in name:
                 loaded_weight_size = loaded_weight.size()
                 if "g_idx" in name:

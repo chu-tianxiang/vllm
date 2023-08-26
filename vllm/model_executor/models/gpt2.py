@@ -270,7 +270,7 @@ class GPT2LMHeadModel(nn.Module):
                 loaded_weight = loaded_weight.t()
 
             if "c_proj.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act):
+                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tensor_model_parallel_world_size
             param = state_dict[name]
 

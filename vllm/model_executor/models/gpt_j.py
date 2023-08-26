@@ -216,7 +216,8 @@ class GPTJForCausalLM(nn.Module):
         "wte.weight", "fc_in.weight", "fc_in.bias", "lm_head.weight",
         "lm_head.bias"
     ]
-    _row_parallel_weights = ["out_proj.weight", "fc_out.weight"]
+    _row_parallel_weights = ["out_proj.weight", "fc_out.weight", "fc_in.qweight",
+                             "fc_in.scales", "fc_in.qzeros"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -224,10 +225,22 @@ class GPTJForCausalLM(nn.Module):
                      use_np_cache: bool = False):
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
+        tp_world_size = get_tensor_model_parallel_world_size()
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
+                self._column_parallel_weights.extend(["out_proj.g_idx", "out_proj.qweight",
+                                                      "fc_out.g_idx", "fc_out.qweight"])
+            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
+                self._column_parallel_weights.extend(["out_proj.qzeros", "out_proj.scales",
+                                                      "fc_out.qzeros", "fc_out.scales"])
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache):
             if "attn.bias" in name or "attn.masked_bias" in name:
                 continue
+
+            if "fc_out.bias" in name and self.quantize_config is not None and (
+                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+                loaded_weight = loaded_weight / tp_world_size
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
