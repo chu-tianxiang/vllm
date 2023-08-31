@@ -2,7 +2,14 @@ from typing import Optional
 
 import torch
 from transformers import PretrainedConfig
-from auto_gptq import BaseQuantizeConfig
+from transformers.utils import (
+    is_auto_gptq_available,
+    is_optimum_available,
+)
+from transformers.utils.quantization_config import (
+    GPTQConfig,
+    QuantizationMethod,
+)
 
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import get_config
@@ -28,6 +35,7 @@ class ModelConfig:
         use_np_weights: Save a numpy copy of model weights for faster loading.
             This can increase the disk usage by up to 2x.
         use_dummy_weights: Use dummy values for model weights (for profiling).
+        use_safetensors: Use Safetensors instead of PyTorch state dict.
         dtype: Data type for model weights and activations. The "auto" option
             will use FP16 precision for FP32 and FP16 models, and BF16 precision
             for BF16 models.
@@ -43,6 +51,7 @@ class ModelConfig:
         download_dir: Optional[str],
         use_np_weights: bool,
         use_dummy_weights: bool,
+        use_safetensors: bool,
         dtype: str,
         seed: int,
     ) -> None:
@@ -53,15 +62,14 @@ class ModelConfig:
         self.download_dir = download_dir
         self.use_np_weights = use_np_weights
         self.use_dummy_weights = use_dummy_weights
+        self.use_safetensors = use_safetensors
         self.seed = seed
+        self.quantize_config = None
 
         self.hf_config = get_config(model, trust_remote_code)
-        try:
-            self.quantize_config = BaseQuantizeConfig.from_pretrained(model)
-        except:
-            self.quantize_config = None
         self.dtype = _get_and_verify_dtype(self.hf_config, dtype)
         self._verify_tokenizer_mode()
+        self._check_quantize_config()
 
     def _verify_tokenizer_mode(self) -> None:
         tokenizer_mode = self.tokenizer_mode.lower()
@@ -70,6 +78,20 @@ class ModelConfig:
                 f"Unknown tokenizer mode: {self.tokenizer_mode}. Must be "
                 "either 'auto' or 'slow'.")
         self.tokenizer_mode = tokenizer_mode
+
+    def _check_quantize_config(self) -> None:
+        if hasattr(self.hf_config,
+                   "quantization_config") and self.hf_config.quantization_config.get(
+                       "quant_method") == QuantizationMethod.GPTQ:
+            if not (is_optimum_available() and is_auto_gptq_available()):
+                raise ImportError(
+                    "Loading GPTQ quantized model requires optimum library : "
+                    "`pip install optimum` and auto-gptq library "
+                    "'pip install auto-gptq'")
+            self.quantize_config = GPTQConfig.from_dict(
+                self.hf_config.quantization_config)
+            # Overriding torch_dtype=torch.float16` for auto-gptq
+            self.dtype = torch.float16
 
     def verify_with_parallel_config(
         self,

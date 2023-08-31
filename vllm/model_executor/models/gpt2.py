@@ -168,7 +168,8 @@ class GPT2Model(nn.Module):
         # is divisible by 64. In addition, it allows us to shard the embedding
         # layer across 2, 4, 8, or more GPUs.
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim,
+        self.wte = VocabParallelEmbedding(vocab_size,
+                                          self.embed_dim,
                                           perform_initialization=False)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList(
@@ -201,8 +202,6 @@ class GPT2Model(nn.Module):
 
 
 class GPT2LMHeadModel(nn.Module):
-    lm_head_name = "lm_head"
-    outside_layer_modules = ["transformer.wte", "transformer.wpe", "transformer.ln_f"]
 
     def __init__(self, config: GPT2Config):
         super().__init__()
@@ -228,26 +227,32 @@ class GPT2LMHeadModel(nn.Module):
         return next_tokens
 
     _column_parallel_weights = ["wte.weight", "c_fc.weight", "c_fc.bias"]
-    _row_parallel_weights = ["c_proj.weight", "c_fc.qweight", "c_fc.scales",
-                             "c_fc.qzeros"]
+    _row_parallel_weights = [
+        "c_proj.weight", "c_fc.qweight", "c_fc.scales", "c_fc.qzeros"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False):
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
         tensor_model_parallel_world_size = (
             get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["c_proj.g_idx", "c_proj.qweight"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["c_proj.qzeros", "c_proj.scales"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend(
+                    ["c_proj.g_idx", "c_proj.qweight"])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend(
+                    ["c_proj.qzeros", "c_proj.scales"])
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "lm_head.weight" in name:
                 # GPT-2 ties the weights of the embedding layer and the final
                 # linear layer.
@@ -270,7 +275,8 @@ class GPT2LMHeadModel(nn.Module):
                 loaded_weight = loaded_weight.t()
 
             if "c_proj.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+                    not self.quantize_config.desc_act
+                    or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tensor_model_parallel_world_size
             param = state_dict[name]
 
@@ -296,11 +302,12 @@ class GPT2LMHeadModel(nn.Module):
                 num_heads = total_num_heads // tensor_model_parallel_world_size
                 head_start = tensor_model_parallel_rank * num_heads
                 head_end = (tensor_model_parallel_rank + 1) * num_heads
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
                     loaded_weight = loaded_weight.view(loaded_weight.shape[0],
                                                        3, total_num_heads, -1)
                     loaded_weight = loaded_weight[:, :, head_start:head_end, :]
-                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+                    loaded_weight = loaded_weight.reshape(
+                        loaded_weight.shape[0], -1)
                 elif name.endswith(".weight"):
                     loaded_weight = loaded_weight.view(3, total_num_heads,
                                                        head_size, hidden_size)

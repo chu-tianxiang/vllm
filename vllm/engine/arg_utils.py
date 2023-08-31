@@ -17,6 +17,7 @@ class EngineArgs:
     download_dir: Optional[str] = None
     use_np_weights: bool = False
     use_dummy_weights: bool = False
+    use_safetensors: bool = False
     dtype: str = 'auto'
     seed: int = 0
     worker_use_ray: bool = False
@@ -73,6 +74,9 @@ class EngineArgs:
         parser.add_argument('--use-dummy-weights',
                             action='store_true',
                             help='use dummy values for model weights')
+        parser.add_argument('--use-safetensors',
+                            action='store_true',
+                            help='use safetensors for model weights')
         # TODO(woosuk): Support FP32.
         parser.add_argument(
             '--dtype',
@@ -147,8 +151,8 @@ class EngineArgs:
         model_config = ModelConfig(self.model, self.tokenizer,
                                    self.tokenizer_mode, self.trust_remote_code,
                                    self.download_dir, self.use_np_weights,
-                                   self.use_dummy_weights, self.dtype,
-                                   self.seed)
+                                   self.use_dummy_weights,
+                                   self.use_safetensors, self.dtype, self.seed)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space)

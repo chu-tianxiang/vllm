@@ -22,6 +22,7 @@ def hf_model_weights_iterator(
     model_name_or_path: str,
     cache_dir: Optional[str] = None,
     use_np_cache: bool = False,
+    use_safetensors: bool = False,
 ) -> Iterator[Tuple[str, torch.Tensor]]:
     # Prepare file lock directory to prevent multiple processes from
     # downloading the same model weights at the same time.
@@ -31,10 +32,11 @@ def hf_model_weights_iterator(
 
     # Download model weights from huggingface.
     is_local = os.path.isdir(model_name_or_path)
+    allow_patterns = ["*.safetensors"] if use_safetensors else ["*.bin"]
     if not is_local:
         with lock:
             hf_folder = snapshot_download(model_name_or_path,
-                                          allow_patterns=["*.bin", "*.safetensors"],
+                                          allow_patterns=allow_patterns,
                                           cache_dir=cache_dir,
                                           tqdm_class=Disabledtqdm)
     else:
@@ -44,13 +46,10 @@ def hf_model_weights_iterator(
         x for x in glob.glob(os.path.join(hf_folder, "*.bin"))
         if not x.endswith("training_args.bin")
     ]
-    safetensor_files = [
-        x for x in glob.glob(os.path.join(hf_folder, "*.safetensors"))
-    ]
 
     # prioritize safetensor files
-    if safetensor_files:
-        for st_file in safetensor_files:
+    if use_safetensors:
+        for st_file in glob.glob(os.path.join(hf_folder, "*.safetensors")):
             with safe_open(st_file, framework="pt") as f:
                 for name in f.keys():
                     param = f.get_tensor(name)

@@ -269,8 +269,6 @@ class BaiChuanModel(nn.Module):
 
 
 class BaiChuanBaseForCausalLM(nn.Module):
-    lm_head_name = "lm_head"
-    outside_layer_modules = ["model.embed_tokens", "model.norm"]
 
     def __init__(self, config, position_embedding: str):
         super().__init__()
@@ -306,20 +304,27 @@ class BaiChuanBaseForCausalLM(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False):
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["o_proj.g_idx", "down_proj.g_idx",
-                                                      "o_proj.qweight", "down_proj.qweight"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["o_proj.qzeros", "o_proj.scales",
-                                                      "down_proj.scales", "down_proj.qzeros"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "o_proj.g_idx", "down_proj.g_idx", "o_proj.qweight",
+                    "down_proj.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "o_proj.qzeros", "o_proj.scales", "down_proj.scales",
+                    "down_proj.qzeros"
+                ])
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "rotary_emb.inv_freq" in name:
                 continue
 
@@ -342,10 +347,11 @@ class BaiChuanBaseForCausalLM(nn.Module):
                 head_end = (tp_rank + 1) * num_heads
                 if "bias" in name:
                     continue
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
-                    if 'qzeros' in name:
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    if "qzeros" in name:
                         head_size = head_size // 32 * self.quantize_config.bits
-                    loaded_weight = loaded_weight.view(-1, 3, total_num_heads, head_size)
+                    loaded_weight = loaded_weight.view(-1, 3, total_num_heads,
+                                                       head_size)
                     loaded_weight = loaded_weight[:, :, head_start:head_end, :]
                     hidden_size = loaded_weight.shape[0]
                     loaded_weight = loaded_weight.reshape(hidden_size, -1)
@@ -364,18 +370,21 @@ class BaiChuanBaseForCausalLM(nn.Module):
                     param.data.copy_(loaded_weight)
                     is_gate_up_weight = True
                     continue
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
                     shard_size = param.shape[1] // 2
-                    loaded_weight = loaded_weight[:,
-                        shard_size * tp_rank:shard_size *
-                        (tp_rank + 1)]
-                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                    loaded_weight = loaded_weight[:, shard_size *
+                                                  tp_rank:shard_size *
+                                                  (tp_rank + 1)]
+                    param_slice = param.data[:, shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 else:
                     shard_size = param.shape[0] // 2
-                    loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                    loaded_weight = loaded_weight[shard_size *
+                                                  tp_rank:shard_size *
                                                   (tp_rank + 1)]
-                    param_slice = param.data[shard_size * stride_id:shard_size *
+                    param_slice = param.data[shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)

@@ -196,8 +196,6 @@ class GPTNeoXModel(nn.Module):
 
 
 class GPTNeoXForCausalLM(nn.Module):
-    lm_head_name = "embed_out"
-    outside_layer_modules = ["gpt_neox.embed_in", "gpt_neox.final_layer_norm"]
 
     def __init__(self, config):
         super().__init__()
@@ -228,32 +226,44 @@ class GPTNeoXForCausalLM(nn.Module):
         "embed_in.weight", "embed_out.weight", "dense_h_to_4h.weight",
         "dense_h_to_4h.bias"
     ]
-    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
-                             "dense_h_to_4h.scales", "dense_h_to_4h.qzeros"]
+    _row_parallel_weights = [
+        "dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
+        "dense_h_to_4h.scales", "dense_h_to_4h.qzeros"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False):
-        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size()
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
+        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
+        )
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["dense_4h_to_h.g_idx", "dense.g_idx",
-                                                      "dense_4h_to_h.qweight", "dense.qweight"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["dense_4h_to_h.qzeros", "dense.qzeros",
-                                                      "dense_4h_to_h.scales", "dense.scales"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "dense_4h_to_h.g_idx", "dense.g_idx",
+                    "dense_4h_to_h.qweight", "dense.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "dense_4h_to_h.qzeros", "dense.qzeros",
+                    "dense_4h_to_h.scales", "dense.scales"
+                ])
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if ("attention.bias" in name or "attention.masked_bias" in name
                     or "rotary_emb.inv_freq" in name):
                 continue
             param = state_dict[name]
-            if ("dense.bias" in name or "dense_4h_to_h.bias" in name) and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+            if ("dense.bias" in name or "dense_4h_to_h.bias"
+                    in name) and self.quantize_config is not None and (
+                        not self.quantize_config.desc_act
+                        or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tensor_model_parallel_world_size
 
             if "query_key_value" in name:
@@ -261,22 +271,24 @@ class GPTNeoXForCausalLM(nn.Module):
                 # [num_heads * 3 * head_size, hidden_size], while the
                 # required shape is [3 * num_heads * head_size, hidden_size].
                 # Thus, we need weight conversion.
-                shard_size = param.shape[0] if not any(key in name for key in (
-                    'qweight', 'qzeros', 'scales')) else param.shape[1]
+                shard_size = param.shape[0] if not any(
+                    key in name for key in ("qweight", "qzeros",
+                                            "scales")) else param.shape[1]
                 start = shard_size * tensor_model_parallel_rank
                 end = shard_size * (tensor_model_parallel_rank + 1)
 
                 num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // num_heads
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
                     loaded_weight = loaded_weight[:, start:end]
-                    if 'qzeros' in name:
+                    if "qzeros" in name:
                         head_size = head_size // 32 * self.quantize_config.bits
-                    loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1,
-                                                       3, head_size)
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
+                                                       -1, 3, head_size)
                     loaded_weight = loaded_weight.transpose(1, 2)
-                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+                    loaded_weight = loaded_weight.reshape(
+                        loaded_weight.shape[0], -1)
 
                 elif "query_key_value.weight" in name:
                     loaded_weight = loaded_weight[start:end]

@@ -212,8 +212,6 @@ class QWenModel(nn.Module):
 
 
 class QWenLMHeadModel(nn.Module):
-    lm_head_name = "lm_head"
-    outside_layer_modules = ["transformer.wte", "transformer.ln_f"]
 
     def __init__(self, config: QWenConfig):
         super().__init__()
@@ -246,24 +244,27 @@ class QWenLMHeadModel(nn.Module):
     _column_parallel_weights = ["wte.weight", "lm_head.weight"]
     _row_parallel_weights = ["c_proj.weight"]
 
-    def load_weights(
-        self,
-        model_name_or_path: str,
-        cache_dir: Optional[str] = None,
-        use_np_cache: bool = False,
-    ):
+    def load_weights(self,
+                     model_name_or_path: str,
+                     cache_dir: Optional[str] = None,
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
 
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["c_proj.qweight", "c_proj.g_idx"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["c_proj.qzeros", "c_proj.scales"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend(
+                    ["c_proj.qweight", "c_proj.g_idx"])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend(
+                    ["c_proj.qzeros", "c_proj.scales"])
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "rotary_emb.inv_freq" in name:
                 continue
 
@@ -285,11 +286,12 @@ class QWenLMHeadModel(nn.Module):
                 head_start = tp_rank * num_heads
                 head_end = (tp_rank + 1) * num_heads
 
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
-                    loaded_weight = loaded_weight.view(loaded_weight.shape[0], 3,
-                                                       total_num_heads, -1)
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
+                                                       3, total_num_heads, -1)
                     loaded_weight = loaded_weight[:, :, head_start:head_end, :]
-                    loaded_weight = loaded_weight.reshape(loaded_weight.shape[0], -1)
+                    loaded_weight = loaded_weight.reshape(
+                        loaded_weight.shape[0], -1)
 
                 elif "weight" in name:
                     loaded_weight = loaded_weight.view(3, total_num_heads,
@@ -311,17 +313,21 @@ class QWenLMHeadModel(nn.Module):
                     param.data.copy_(loaded_weight)
                     is_gate_up_weight = True
                     continue
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
                     shard_size = param.shape[1] // 2
-                    loaded_weight = loaded_weight[:,
-                        shard_size * tp_rank:shard_size * (tp_rank + 1)]
-                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                    loaded_weight = loaded_weight[:, shard_size *
+                                                  tp_rank:shard_size *
+                                                  (tp_rank + 1)]
+                    param_slice = param.data[:, shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 else:
                     shard_size = param.shape[0] // 2
-                    loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                    loaded_weight = loaded_weight[shard_size *
+                                                  tp_rank:shard_size *
                                                   (tp_rank + 1)]
-                    param_slice = param.data[shard_size * stride_id:shard_size *
+                    param_slice = param.data[shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)

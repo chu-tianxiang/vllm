@@ -184,8 +184,6 @@ class GPTJModel(nn.Module):
 
 
 class GPTJForCausalLM(nn.Module):
-    lm_head_name = "lm_head"
-    outside_layer_modules = ["transformer.wte", "transformer.ln_f"]
 
     def __init__(self, config: GPTJConfig):
         super().__init__()
@@ -216,30 +214,40 @@ class GPTJForCausalLM(nn.Module):
         "wte.weight", "fc_in.weight", "fc_in.bias", "lm_head.weight",
         "lm_head.bias"
     ]
-    _row_parallel_weights = ["out_proj.weight", "fc_out.weight", "fc_in.qweight",
-                             "fc_in.scales", "fc_in.qzeros"]
+    _row_parallel_weights = [
+        "out_proj.weight", "fc_out.weight", "fc_in.qweight", "fc_in.scales",
+        "fc_in.qzeros"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False):
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         tp_world_size = get_tensor_model_parallel_world_size()
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["out_proj.g_idx", "out_proj.qweight",
-                                                      "fc_out.g_idx", "fc_out.qweight"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["out_proj.qzeros", "out_proj.scales",
-                                                      "fc_out.qzeros", "fc_out.scales"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "out_proj.g_idx", "out_proj.qweight", "fc_out.g_idx",
+                    "fc_out.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "out_proj.qzeros", "out_proj.scales", "fc_out.qzeros",
+                    "fc_out.scales"
+                ])
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "attn.bias" in name or "attn.masked_bias" in name:
                 continue
 
             if "fc_out.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+                    not self.quantize_config.desc_act
+                    or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tp_world_size
 
             is_attention_weight = False
@@ -252,17 +260,21 @@ class GPTJForCausalLM(nn.Module):
                     param.data.copy_(loaded_weight)
                     is_attention_weight = True
                     continue
-                if any(key in name for key in ('qweight', 'qzeros', 'scales')):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
                     shard_size = param.shape[1] // 3
-                    loaded_weight = loaded_weight[:,
-                        shard_size * tp_rank:shard_size * (tp_rank + 1)]
-                    param_slice = param.data[:, shard_size * stride_id:shard_size *
+                    loaded_weight = loaded_weight[:, shard_size *
+                                                  tp_rank:shard_size *
+                                                  (tp_rank + 1)]
+                    param_slice = param.data[:, shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 else:
                     shard_size = param.shape[0] // 3
-                    loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                    loaded_weight = loaded_weight[shard_size *
+                                                  tp_rank:shard_size *
                                                   (tp_rank + 1)]
-                    param_slice = param.data[shard_size * stride_id:shard_size *
+                    param_slice = param.data[shard_size *
+                                             stride_id:shard_size *
                                              (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)

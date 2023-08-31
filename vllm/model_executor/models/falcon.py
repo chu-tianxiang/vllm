@@ -378,8 +378,6 @@ class FalconModel(nn.Module):
 
 
 class FalconForCausalLM(nn.Module):
-    lm_head_name = "lm_head"
-    outside_layer_modules = ["transformer.word_embeddings", "transformer.ln_f"]
 
     def __init__(self, config: FalconConfig):
         super().__init__()
@@ -416,22 +414,31 @@ class FalconForCausalLM(nn.Module):
         "word_embeddings.weight", "lm_head.weight", "dense_h_to_4h.weight",
         "dense_h_to_4h.bias"
     ]
-    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
-                             "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"]
+    _row_parallel_weights = [
+        "dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
+        "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False):
+                     use_np_cache: bool = False,
+                     use_safetensors: bool = False):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
         if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or self.quantize_config.group_size == -1:
-                self._column_parallel_weights.extend(["dense.g_idx", "dense_4h_to_h.g_idx",
-                                                      "dense.qweight", "dense_4h_to_h.qweight"])
-            if not self.quantize_config.desc_act and self.quantize_config.group_size != -1:
-                self._column_parallel_weights.extend(["dense.qzeros", "dense_4h_to_h.qzeros",
-                                                      "dense.scales", "dense_4h_to_h.scales"])
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "dense.g_idx", "dense_4h_to_h.g_idx", "dense.qweight",
+                    "dense_4h_to_h.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "dense.qzeros", "dense_4h_to_h.qzeros", "dense.scales",
+                    "dense_4h_to_h.scales"
+                ])
 
         hidden_size = self.config.hidden_size
         total_num_heads = self.config.num_attention_heads
@@ -461,9 +468,11 @@ class FalconForCausalLM(nn.Module):
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache):
-            if ("dense.bias" in name or "dense_4h_to_h.bias" in name) and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act or self.quantize_config.group_size == -1):
+                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+            if ("dense.bias" in name or "dense_4h_to_h.bias"
+                    in name) and self.quantize_config is not None and (
+                        not self.quantize_config.desc_act
+                        or self.quantize_config.group_size == -1):
                 loaded_weight = loaded_weight / tp_size
             if "query_key_value" in name:
                 loaded_weight_size = loaded_weight.size()
@@ -477,23 +486,32 @@ class FalconForCausalLM(nn.Module):
                     else:
                         state_dict[name].data.copy_(loaded_weight)
                     continue
-                elif any(key in name for key in ('qweight', 'qzeros', 'scales')):
-                    loaded_weight = loaded_weight.view(loaded_weight_size[0],
-                        total_num_kv_heads, num_query_heads_per_kv_head + 2, -1)
-                    wq = loaded_weight[:, kv_head_start:kv_head_end, :-2].reshape(loaded_weight_size[0], -1)
-                    wk = loaded_weight[:, kv_head_start:kv_head_end, [-2]].reshape(loaded_weight_size[0], -1)
-                    wv = loaded_weight[:, kv_head_start:kv_head_end, [-1]].reshape(loaded_weight_size[0], -1)
+                elif any(key in name
+                         for key in ("qweight", "qzeros", "scales")):
+                    loaded_weight = loaded_weight.view(
+                        loaded_weight_size[0], total_num_kv_heads,
+                        num_query_heads_per_kv_head + 2, -1)
+                    wq = loaded_weight[:,
+                                       kv_head_start:kv_head_end, :-2].reshape(
+                                           loaded_weight_size[0], -1)
+                    wk = loaded_weight[:, kv_head_start:kv_head_end,
+                                       [-2]].reshape(loaded_weight_size[0], -1)
+                    wv = loaded_weight[:, kv_head_start:kv_head_end,
+                                       [-1]].reshape(loaded_weight_size[0], -1)
                     dim = 1
                 else:
                     loaded_weight = loaded_weight.view(
                         total_num_kv_heads, num_query_heads_per_kv_head + 2,
                         head_size, *loaded_weight_size[1:])
 
-                    wq = loaded_weight[:, :-2].reshape(-1, *loaded_weight_size[1:])
-                    wk = loaded_weight[:, [-2]].reshape(-1,
-                                                        *loaded_weight_size[1:])
-                    wv = loaded_weight[:, [-1]].reshape(-1,
-                                                        *loaded_weight_size[1:])
+                    wq = loaded_weight[:, :-2].reshape(-1,
+                                                       *loaded_weight_size[1:])
+                    wk = loaded_weight[:,
+                                       [-2]].reshape(-1,
+                                                     *loaded_weight_size[1:])
+                    wv = loaded_weight[:,
+                                       [-1]].reshape(-1,
+                                                     *loaded_weight_size[1:])
 
                     wq = wq[head_size * head_start:head_size * head_end]
                     wk = wk[head_size * kv_head_start:head_size * kv_head_end]
