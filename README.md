@@ -9,23 +9,6 @@
 Easy, fast, and cheap LLM serving for everyone
 </h3>
 
-This branch adds GPTQ supports to vllm.
-
-Currently verified model architectures:
-
-* LLaMA: `TheBloke/Llama-2-7b-Chat-GPTQ`, `TheBloke/Llama-2-13b-Chat-GPTQ`, `TheBloke/Llama-2-70b-Chat-GPTQ`
-* QWen: `Qwen/Qwen-7B-Chat-Int4`
-* Baichuan: `TheBloke/baichuan-7B-GPTQ`
-* GPT-2: `mlabonne/gpt2-GPTQ-4bit`
-* GPT-J: `PanEa/dolly-v2-gptj-enhanced-auto-gptq`
-* GPT-Neox: `TheBloke/stablecode-instruct-alpha-3b-GPTQ`
-* Bloom: `TheBloke/BLOOMChat-176B-v1-GPTQ`
-* Falcon: `TheBloke/falcon-7b-instruct-GPTQ`
-* InternLM: `cczhong/internlm-chat-7b-4bit-gptq`
-* GPT-Bigcode: `TheBloke/starcoderplus-GPTQ`
-
-There're various different configurations for GPTQ and the code has not been thoroughly tested yet.
-
 <p align="center">
 | <a href="https://vllm.readthedocs.io/en/latest/"><b>Documentation</b></a> | <a href="https://vllm.ai"><b>Blog</b></a> | <a href="https://github.com/vllm-project/vllm/discussions"><b>Discussions</b></a> |
 
