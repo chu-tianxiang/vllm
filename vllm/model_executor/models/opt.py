@@ -292,7 +292,10 @@ class OPTForCausalLM(nn.Module):
     _column_parallel_weights = [
         "embed_tokens.weight", "fc1.weight", "fc1.bias"
     ]
-    _row_parallel_weights = ["out_proj.weight", "fc2.weight"]
+    _row_parallel_weights = [
+        "out_proj.weight", "fc2.weight", "fc1.qweight", "fc1.qzeros",
+        "fc1.scales"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -300,7 +303,22 @@ class OPTForCausalLM(nn.Module):
                      use_np_cache: bool = False,
                      use_safetensors: bool = False):
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
+        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
+        )
         state_dict = self.state_dict()
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "fc2.g_idx", "out_proj.g_idx", "fc2.qweight",
+                    "out_proj.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "fc2.qzeros", "out_proj.qzeros", "fc2.scales",
+                    "out_proj.scales"
+                ])
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
@@ -310,18 +328,41 @@ class OPTForCausalLM(nn.Module):
             if name.startswith("decoder."):
                 name = "model." + name
 
+            if ("fc2.bias" in name or "out_proj.bias"
+                    in name) and self.quantize_config is not None and (
+                        not self.quantize_config.desc_act
+                        or self.quantize_config.group_size == -1):
+                loaded_weight = loaded_weight / tensor_model_parallel_world_size
+
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
                 ["q_proj", "k_proj", "v_proj"]):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]
-                shard_size = param.shape[0] // 3
-                loaded_weight = loaded_weight[
-                    shard_size * tensor_model_parallel_rank:shard_size *
-                    (tensor_model_parallel_rank + 1)]
-                param_slice = param.data[shard_size * stride_id:shard_size *
-                                         (stride_id + 1)]
+                if "g_idx" in name:
+                    param.data.copy_(loaded_weight)
+                    is_attention_weight = True
+                    continue
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    shard_size = param.shape[1] // 3
+                    loaded_weight = loaded_weight[:, shard_size *
+                                                  tensor_model_parallel_rank:
+                                                  shard_size *
+                                                  (tensor_model_parallel_rank +
+                                                   1)]
+                    param_slice = param.data[:, shard_size *
+                                             stride_id:shard_size *
+                                             (stride_id + 1)]
+                else:
+                    shard_size = param.shape[0] // 3
+                    loaded_weight = loaded_weight[
+                        shard_size * tensor_model_parallel_rank:shard_size *
+                        (tensor_model_parallel_rank + 1)]
+                    param_slice = param.data[shard_size *
+                                             stride_id:shard_size *
+                                             (stride_id + 1)]
+
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)
                 is_attention_weight = True

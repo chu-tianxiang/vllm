@@ -80,8 +80,8 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _check_quantize_config(self) -> None:
-        if hasattr(self.hf_config,
-                   "quantization_config") and self.hf_config.quantization_config.get(
+        if hasattr(self.hf_config, "quantization_config"
+                   ) and self.hf_config.quantization_config.get(
                        "quant_method") == QuantizationMethod.GPTQ:
             if not (is_optimum_available() and is_auto_gptq_available()):
                 raise ImportError(

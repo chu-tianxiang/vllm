@@ -238,7 +238,10 @@ class MPTForCausalLM(nn.Module):
         return next_tokens
 
     _column_parallel_weights = ["wte.weight", "up_proj.weight", "up_proj.bias"]
-    _row_parallel_weights = ["out_proj.weight", "down_proj.weight"]
+    _row_parallel_weights = [
+        "out_proj.weight", "down_proj.weight", "up_proj.qweight",
+        "up_proj.scales", "up_proj.qzeros"
+    ]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -248,8 +251,26 @@ class MPTForCausalLM(nn.Module):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
+        if self.quantize_config is not None:
+            if not self.quantize_config.desc_act or (
+                    self.quantize_config.group_size == -1):
+                self._column_parallel_weights.extend([
+                    "down_proj.g_idx", "down_proj.qweight", "out_proj.g_idx",
+                    "out_proj.qweight"
+                ])
+            if not self.quantize_config.desc_act and (
+                    self.quantize_config.group_size != -1):
+                self._column_parallel_weights.extend([
+                    "down_proj.qzeros", "down_proj.scales", "out_proj.qzeros",
+                    "out_proj.scales"
+                ])
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+            if ("down_proj.bias" in name or "out_proj.bias"
+                in name) and self.quantize_config is not None and (
+                        not self.quantize_config.desc_act
+                        or self.quantize_config.group_size == -1):
+                loaded_weight = loaded_weight / tp_world_size
             if "Wqkv" in name:
                 # NOTE(woosuk): MPT's fused QKV has the shape of
                 # [3 * num_heads * head_size, hidden_size].
@@ -262,7 +283,13 @@ class MPTForCausalLM(nn.Module):
                 head_start = tp_rank * num_heads
                 head_end = (tp_rank + 1) * num_heads
 
-                if name.endswith(".weight"):
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
+                                                       3, total_num_heads, -1)
+                    loaded_weight = loaded_weight[:, :, head_start:head_end, :]
+                    loaded_weight = loaded_weight.reshape(
+                        loaded_weight.shape[0], -1)
+                elif name.endswith(".weight"):
                     loaded_weight = loaded_weight.view(3, total_num_heads,
                                                        head_size, hidden_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :, :]
@@ -272,8 +299,6 @@ class MPTForCausalLM(nn.Module):
                                                        head_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :]
                     loaded_weight = loaded_weight.reshape(-1)
-                else:
-                    raise ValueError(f"Unexpected parameter name {name}")
                 name = name.replace("Wqkv", "qkv_proj")
             param = state_dict[name]
             load_tensor_parallel_weights(param, loaded_weight, name,
