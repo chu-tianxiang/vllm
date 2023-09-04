@@ -31,7 +31,9 @@ from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.attention import PagedAttentionWithRoPE
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
-                                              load_tensor_parallel_weights)
+                                              load_tensor_parallel_weights,
+                                              preprocess_quant_weight,
+                                              update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -212,12 +214,9 @@ class GPTJForCausalLM(nn.Module):
 
     _column_parallel_weights = [
         "wte.weight", "fc_in.weight", "fc_in.bias", "lm_head.weight",
-        "lm_head.bias"
+        "lm_head.bias", "fc_in.qweight", "fc_in.scales", "fc_in.qzeros"
     ]
-    _row_parallel_weights = [
-        "out_proj.weight", "fc_out.weight", "fc_in.qweight", "fc_in.scales",
-        "fc_in.qzeros"
-    ]
+    _row_parallel_weights = ["out_proj.weight", "fc_out.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -227,28 +226,20 @@ class GPTJForCausalLM(nn.Module):
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
         tp_world_size = get_tensor_model_parallel_world_size()
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend([
-                    "out_proj.g_idx", "out_proj.qweight", "fc_out.g_idx",
-                    "fc_out.qweight"
-                ])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend([
-                    "out_proj.qzeros", "out_proj.scales", "fc_out.qzeros",
-                    "fc_out.scales"
-                ])
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
+
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "attn.bias" in name or "attn.masked_bias" in name:
                 continue
 
-            if "fc_out.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act
-                    or self.quantize_config.group_size == -1):
-                loaded_weight = loaded_weight / tp_world_size
+            loaded_weight = preprocess_quant_weight(self.quantize_config, name,
+                                                    loaded_weight,
+                                                    self._row_parallel_weights,
+                                                    tp_world_size)
 
             is_attention_weight = False
             for stride_id, att_weight_name in enumerate(
@@ -256,26 +247,18 @@ class GPTJForCausalLM(nn.Module):
                 if att_weight_name not in name:
                     continue
                 param = state_dict[name.replace(att_weight_name, "qkv_proj")]
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    param = param.T
+
                 if "g_idx" in name:
                     param.data.copy_(loaded_weight)
                     is_attention_weight = True
                     continue
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    shard_size = param.shape[1] // 3
-                    loaded_weight = loaded_weight[:, shard_size *
-                                                  tp_rank:shard_size *
-                                                  (tp_rank + 1)]
-                    param_slice = param.data[:, shard_size *
-                                             stride_id:shard_size *
-                                             (stride_id + 1)]
-                else:
-                    shard_size = param.shape[0] // 3
-                    loaded_weight = loaded_weight[shard_size *
-                                                  tp_rank:shard_size *
-                                                  (tp_rank + 1)]
-                    param_slice = param.data[shard_size *
-                                             stride_id:shard_size *
-                                             (stride_id + 1)]
+                shard_size = param.shape[0] // 3
+                loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
+                                              (tp_rank + 1)]
+                param_slice = param.data[shard_size * stride_id:shard_size *
+                                         (stride_id + 1)]
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)
                 is_attention_weight = True

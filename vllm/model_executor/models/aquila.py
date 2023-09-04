@@ -36,7 +36,8 @@ from vllm.model_executor.layers.attention import PagedAttentionWithRoPE
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (
     hf_model_weights_iterator, load_padded_tensor_parallel_vocab,
-    load_tensor_parallel_weights)
+    load_tensor_parallel_weights, preprocess_quant_weight,
+    update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -296,19 +297,10 @@ class AquilaForCausalLM(nn.Module):
         kv_proj_shard_size = (self.config.hidden_size //
                               self.config.num_attention_heads *
                               self.config.num_attention_heads // tp_size)
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend([
-                    "o_proj.g_idx", "down_proj.g_idx", "o_proj.qweight",
-                    "down_proj.qweight"
-                ])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend([
-                    "o_proj.qzeros", "o_proj.scales", "down_proj.scales",
-                    "down_proj.qzeros"
-                ])
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
 
         attention_weight_specs = [
             # (weight_name, shard_size, offset)
@@ -323,32 +315,29 @@ class AquilaForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
             if "rotary_emb.inv_freq" in name:
                 continue
+            loaded_weight = preprocess_quant_weight(self.quantize_config, name,
+                                                    loaded_weight,
+                                                    self._row_parallel_weights,
+                                                    tp_size)
 
             is_attention_weight = False
             for weight_name, shard_size, offset in attention_weight_specs:
                 if weight_name not in name:
                     continue
                 param = state_dict[name.replace(weight_name, "qkv_proj")]
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    param = param.T
                 if "g_idx" in name:
                     param.data.copy_(loaded_weight)
                     is_attention_weight = True
                     continue
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    if "qzeros" in name:
-                        shard_size = shard_size // (32 *
-                                                    self.quantize_config.bits)
-                        offset = offset // 32 * self.quantize_config.bits
-                    loaded_weight = loaded_weight[:, shard_size *
-                                                  tensor_model_parallel_rank:
-                                                  shard_size *
-                                                  (tensor_model_parallel_rank +
-                                                   1)]
-                    param_slice = param.data[:, offset:offset + shard_size]
-                else:
-                    loaded_weight = loaded_weight[
-                        shard_size * tensor_model_parallel_rank:shard_size *
-                        (tensor_model_parallel_rank + 1)]
-                    param_slice = param.data[offset:offset + shard_size]
+                if "qzeros" in name:
+                    shard_size = shard_size // 32 * self.quantize_config.bits
+                    offset = offset // 32 * self.quantize_config.bits
+                loaded_weight = loaded_weight[
+                    shard_size * tensor_model_parallel_rank:shard_size *
+                    (tensor_model_parallel_rank + 1)]
+                param_slice = param.data[offset:offset + shard_size]
 
                 assert param_slice.shape == loaded_weight.shape
 
@@ -363,28 +352,18 @@ class AquilaForCausalLM(nn.Module):
                 if weight_name not in name:
                     continue
                 param = state_dict[name.replace(weight_name, "gate_up_proj")]
+                if any(key in name for key in ("qweight", "qzeros", "scales")):
+                    param = param.T
                 if "g_idx" in name:
                     param.data.copy_(loaded_weight)
                     is_gate_up_weight = True
                     continue
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    shard_size = param.shape[1] // 2
-                    loaded_weight = loaded_weight[:, shard_size *
-                                                  tensor_model_parallel_rank:
-                                                  shard_size *
-                                                  (tensor_model_parallel_rank +
-                                                   1)]
-                    param_slice = param.data[:, shard_size *
-                                             stride_id:shard_size *
-                                             (stride_id + 1)]
-                else:
-                    shard_size = param.shape[0] // 2
-                    loaded_weight = loaded_weight[
-                        shard_size * tensor_model_parallel_rank:shard_size *
-                        (tensor_model_parallel_rank + 1)]
-                    param_slice = param.data[shard_size *
-                                             stride_id:shard_size *
-                                             (stride_id + 1)]
+                shard_size = param.shape[0] // 2
+                loaded_weight = loaded_weight[
+                    shard_size * tensor_model_parallel_rank:shard_size *
+                    (tensor_model_parallel_rank + 1)]
+                param_slice = param.data[shard_size * stride_id:shard_size *
+                                         (stride_id + 1)]
 
                 assert param_slice.shape == loaded_weight.shape
                 param_slice.copy_(loaded_weight)

@@ -33,7 +33,8 @@ from vllm.model_executor.layers.attention import PagedAttention
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (
     hf_model_weights_iterator, load_padded_tensor_parallel_vocab,
-    load_tensor_parallel_weights)
+    load_tensor_parallel_weights, preprocess_quant_weight,
+    update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -227,10 +228,11 @@ class GPT2LMHeadModel(nn.Module):
                                    input_metadata)
         return next_tokens
 
-    _column_parallel_weights = ["c_fc.weight", "c_fc.bias"]
-    _row_parallel_weights = [
-        "c_proj.weight", "c_fc.qweight", "c_fc.scales", "c_fc.qzeros"
+    _column_parallel_weights = [
+        "c_fc.weight", "c_fc.bias", "c_fc.qweight", "c_fc.scales",
+        "c_fc.qzeros"
     ]
+    _row_parallel_weights = ["c_proj.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -241,16 +243,10 @@ class GPT2LMHeadModel(nn.Module):
             get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
-
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend(
-                    ["c_proj.g_idx", "c_proj.qweight"])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend(
-                    ["c_proj.qzeros", "c_proj.scales"])
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
@@ -266,6 +262,10 @@ class GPT2LMHeadModel(nn.Module):
             if not name.startswith("transformer."):
                 name = "transformer." + name
 
+            loaded_weight = preprocess_quant_weight(
+                self.quantize_config, name, loaded_weight,
+                self._row_parallel_weights, tensor_model_parallel_world_size)
+
             # The HF's GPT-2 implementation uses Conv1D instead of Linear.
             # Because of this, we need to transpose the weights.
             for conv1d_weight_name in ["c_attn", "c_proj", "c_fc"]:
@@ -275,10 +275,6 @@ class GPT2LMHeadModel(nn.Module):
                     continue
                 loaded_weight = loaded_weight.t()
 
-            if "c_proj.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act
-                    or self.quantize_config.group_size == -1):
-                loaded_weight = loaded_weight / tensor_model_parallel_world_size
             param = state_dict[name]
 
             if name == "transformer.wte.weight":
@@ -298,17 +294,15 @@ class GPT2LMHeadModel(nn.Module):
                 num_heads = total_num_heads // tensor_model_parallel_world_size
                 head_start = tensor_model_parallel_rank * num_heads
                 head_end = (tensor_model_parallel_rank + 1) * num_heads
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
-                                                       3, total_num_heads, -1)
-                    loaded_weight = loaded_weight[:, :, head_start:head_end, :]
-                    loaded_weight = loaded_weight.reshape(
-                        loaded_weight.shape[0], -1)
-                elif name.endswith(".weight"):
-                    loaded_weight = loaded_weight.view(3, total_num_heads,
-                                                       head_size, hidden_size)
+                last_dim_size = loaded_weight.shape[-1]
+                if any(
+                        name.endswith(pattern)
+                        for pattern in (".weight", ".qweight", ".qzeros",
+                                        ".scales")):
+                    loaded_weight = loaded_weight.view(3, total_num_heads, -1,
+                                                       last_dim_size)
                     loaded_weight = loaded_weight[:, head_start:head_end, :, :]
-                    loaded_weight = loaded_weight.reshape(-1, hidden_size)
+                    loaded_weight = loaded_weight.reshape(-1, last_dim_size)
                 elif name.endswith(".bias"):
                     loaded_weight = loaded_weight.view(3, total_num_heads,
                                                        head_size)

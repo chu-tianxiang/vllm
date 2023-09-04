@@ -32,7 +32,9 @@ from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.attention import PagedAttentionWithALiBi
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
-                                              load_tensor_parallel_weights)
+                                              load_tensor_parallel_weights,
+                                              preprocess_quant_weight,
+                                              update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -272,12 +274,14 @@ class BloomForCausalLM(nn.Module):
         return next_tokens
 
     _column_parallel_weights = [
-        "word_embeddings.weight", "dense_h_to_4h.weight", "dense_h_to_4h.bias"
+        "word_embeddings.weight",
+        "dense_h_to_4h.weight",
+        "dense_h_to_4h.bias",
+        "dense_h_to_4h.qweight",
+        "dense_h_to_4h.qzeros",
+        "dense_h_to_4h.scales",
     ]
-    _row_parallel_weights = [
-        "dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
-        "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"
-    ]
+    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -287,19 +291,10 @@ class BloomForCausalLM(nn.Module):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend([
-                    "dense.g_idx", "dense_4h_to_h.g_idx", "dense.qweight",
-                    "dense_4h_to_h.qweight"
-                ])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend([
-                    "dense.qzeros", "dense_4h_to_h.qzeros", "dense.scales",
-                    "dense_4h_to_h.scales"
-                ])
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
@@ -313,12 +308,10 @@ class BloomForCausalLM(nn.Module):
                 if not name.startswith("transformer."):
                     name = "transformer." + name
                 param = state_dict[name]
-
-            if ("dense.bias" in name or "dense_4h_to_h.bias"
-                    in name) and self.quantize_config is not None and (
-                        not self.quantize_config.desc_act
-                        or self.quantize_config.group_size == -1):
-                loaded_weight = loaded_weight / tp_world_size
+            loaded_weight = preprocess_quant_weight(self.quantize_config, name,
+                                                    loaded_weight,
+                                                    self._row_parallel_weights,
+                                                    tp_world_size)
 
             if "query_key_value" in name:
                 # NOTE(woosuk): BLOOM's fused QKV has the shape of
@@ -330,28 +323,25 @@ class BloomForCausalLM(nn.Module):
                                             "scales")) else param.shape[1]
                 start = shard_size * tp_rank
                 end = shard_size * (tp_rank + 1)
+                if "g_idx" not in name:
+                    loaded_weight = loaded_weight[start:end]
 
                 num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // num_heads
+                last_dim_size = loaded_weight.shape[-1]
                 if "qzeros" in name:
                     head_size = head_size // 32 * self.quantize_config.bits
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    loaded_weight = loaded_weight[:, start:end]
-                    loaded_weight = loaded_weight.view(loaded_weight.shape[0],
-                                                       -1, 3, head_size)
-                    loaded_weight = loaded_weight.transpose(1, 2)
-                    loaded_weight = loaded_weight.reshape(
-                        loaded_weight.shape[0], -1)
-
-                elif "query_key_value.weight" in name:
-                    loaded_weight = loaded_weight[start:end]
+                if any(pattern in name
+                       for pattern in ("query_key_value.weight",
+                                       "query_key_value.qweight",
+                                       "query_key_value.qzeros",
+                                       "query_key_value.scales")):
                     loaded_weight = loaded_weight.view(-1, 3, head_size,
-                                                       hidden_size)
+                                                       last_dim_size)
                     loaded_weight = loaded_weight.transpose(0, 1)
-                    loaded_weight = loaded_weight.reshape(-1, hidden_size)
+                    loaded_weight = loaded_weight.reshape(-1, last_dim_size)
                 elif "query_key_value.bias" in name:
-                    loaded_weight = loaded_weight[start:end]
                     loaded_weight = loaded_weight.view(-1, 3, head_size)
                     loaded_weight = loaded_weight.transpose(0, 1)
                     loaded_weight = loaded_weight.reshape(-1)

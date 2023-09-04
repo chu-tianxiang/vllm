@@ -34,7 +34,8 @@ from vllm.model_executor.layers.attention import PagedAttention
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (
     hf_model_weights_iterator, load_padded_tensor_parallel_vocab,
-    load_tensor_parallel_weights)
+    load_tensor_parallel_weights, preprocess_quant_weight,
+    update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -255,10 +256,11 @@ class GPTBigCodeForCausalLM(nn.Module):
                                    input_metadata)
         return next_tokens
 
-    _column_parallel_weights = ["c_fc.weight", "c_fc.bias"]
-    _row_parallel_weights = [
-        "c_proj.weight", "c_fc.qweight", "c_fc.qzeros", "c_fc.scales"
+    _column_parallel_weights = [
+        "c_fc.weight", "c_fc.bias", "c_fc.qzeros", "c_fc.scales",
+        "c_fc.qweight"
     ]
+    _row_parallel_weights = ["c_proj.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -269,15 +271,10 @@ class GPTBigCodeForCausalLM(nn.Module):
             get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend(
-                    ["c_proj.g_idx", "c_proj.qweight"])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend(
-                    ["c_proj.qzeros", "c_proj.scales"])
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
@@ -290,13 +287,12 @@ class GPTBigCodeForCausalLM(nn.Module):
                 # NOTE: "c_attn.bias" should not be skipped.
                 continue
 
+            loaded_weight = preprocess_quant_weight(
+                self.quantize_config, name, loaded_weight,
+                self._row_parallel_weights, tensor_model_parallel_world_size)
+
             if not name.startswith("transformer."):
                 name = "transformer." + name
-
-            if "c_proj.bias" in name and self.quantize_config is not None and (
-                    not self.quantize_config.desc_act
-                    or self.quantize_config.group_size == -1):
-                loaded_weight = loaded_weight / tensor_model_parallel_world_size
 
             # For the fused QKV linear layer, manually shard the weights.
             if "c_attn" in name:
@@ -325,31 +321,21 @@ class GPTBigCodeForCausalLM(nn.Module):
                 head_start = tensor_model_parallel_rank * num_heads
                 head_end = (tensor_model_parallel_rank + 1) * num_heads
 
-                dim = 1 if any(key in name for key in ("qweight", "qzeros",
-                                                       "scales")) else 0
                 wq, wk, wv = torch.split(
                     loaded_weight, [hidden_size, total_kv_size, total_kv_size],
-                    dim=dim)
+                    dim=0)
 
-                if any(key in name for key in ("qweight", "qzeros", "scales")):
-                    wq = wq[:, head_size * head_start:head_size * head_end]
-                else:
-                    wq = wq[head_size * head_start:head_size * head_end]
+                wq = wq[head_size * head_start:head_size * head_end]
                 if not self.config.multi_query:
                     # Split the heads when using normal multi-head attention
-                    if any(key in name
-                           for key in ("qweight", "qzeros", "scales")):
-                        wk = wk[:, head_size * head_start:head_size * head_end]
-                        wv = wv[:, head_size * head_start:head_size * head_end]
-                    else:
-                        wk = wk[head_size * head_start:head_size * head_end]
-                        wv = wv[head_size * head_start:head_size * head_end]
-                    loaded_weight = torch.cat([wq, wk, wv], dim=dim)
+                    wk = wk[head_size * head_start:head_size * head_end]
+                    wv = wv[head_size * head_start:head_size * head_end]
+                    loaded_weight = torch.cat([wq, wk, wv], dim=0)
                 else:
                     # For multi-query attention, we split the query
                     # but replicate the key and value.
                     loaded_weight_q = wq
-                    loaded_weight_kv = torch.cat([wk, wv], dim=dim)
+                    loaded_weight_kv = torch.cat([wk, wv], dim=0)
                     q_weight_name = name.replace("c_attn", "c_attn_q")
                     kv_weight_name = name.replace("c_attn", "c_attn_kv")
                     load_tensor_parallel_weights(state_dict[q_weight_name],

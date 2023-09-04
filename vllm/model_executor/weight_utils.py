@@ -192,6 +192,8 @@ def load_tensor_parallel_weights(
     row_parallel_weight_names: List[str],
     tensor_model_parallel_rank: int,
 ) -> None:
+    if any(p in param_name for p in ("qweight", "qzeros", "scales")):
+        param = param.T
     for p in column_parallel_weight_names:
         if p in param_name:
             shard_size = param.shape[0]
@@ -206,10 +208,6 @@ def load_tensor_parallel_weights(
             end_idx = (tensor_model_parallel_rank + 1) * shard_size
             loaded_weight = loaded_weight[:, start_idx:end_idx]
             break
-
-    # convert PySafeSlice object to torch.Tensor
-    if not isinstance(loaded_weight, torch.Tensor):
-        loaded_weight = loaded_weight[:]
 
     assert param.shape == loaded_weight.shape, (
         f"{param_name} shape mismatch between model and checkpoint: "
@@ -231,3 +229,52 @@ def initialize_dummy_weights(
     """
     for param in model.state_dict().values():
         param.data.uniform_(low, high)
+
+
+def update_parallel_weight_names(
+    quantize_config: Any,
+    row_parallel_weights_names: List[str],
+    column_parallel_weights_names: List[str],
+) -> Tuple[List[str], List[str]]:
+    if quantize_config is None or (
+        quantize_config.desc_act and quantize_config.group_size != -1):
+        return row_parallel_weights_names, column_parallel_weights_names
+
+    row_parallel_layers = [
+        q for q in row_parallel_weights_names if q.endswith("weight")
+    ]
+
+    row_parallel_weights_names += [
+        q.replace("weight", "qweight") for q in row_parallel_layers
+    ]
+    column_parallel_weights_names += [
+        q.replace("weight", "g_idx") for q in row_parallel_layers
+    ]
+    if not quantize_config.desc_act and quantize_config.group_size != -1:
+        row_parallel_weights_names += [
+            q.replace("weight", "qzeros") for q in row_parallel_layers
+        ] + [
+            q.replace("weight", "scales") for q in row_parallel_layers
+        ]
+
+    return row_parallel_weights_names, column_parallel_weights_names
+
+
+def preprocess_quant_weight(quantize_config: Any, param_name: str,
+                            loaded_weight: torch.Tensor,
+                            row_parallel_weights_names: List[str],
+                            tp_world_size: int) -> torch.Tensor:
+    if quantize_config is None:
+        return loaded_weight
+    if not quantize_config.desc_act or quantize_config.group_size == -1:
+        row_parallel_bias_names = [
+            p.replace(".weight", ".bias") for p in row_parallel_weights_names
+            if p.endswith(".weight")
+        ]
+        for p in row_parallel_bias_names:
+            if p in param_name:
+                loaded_weight = loaded_weight / tp_world_size
+                break
+    if any(p in param_name for p in ("qweight", "qzeros", "scales")):
+        loaded_weight = loaded_weight.T.contiguous()
+    return loaded_weight

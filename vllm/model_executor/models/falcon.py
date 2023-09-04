@@ -32,7 +32,9 @@ from vllm.model_executor.layers.attention import (PagedAttention,
                                                   PagedAttentionWithRoPE)
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
-                                              load_tensor_parallel_weights)
+                                              load_tensor_parallel_weights,
+                                              preprocess_quant_weight,
+                                              update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -412,12 +414,10 @@ class FalconForCausalLM(nn.Module):
 
     _column_parallel_weights = [
         "word_embeddings.weight", "lm_head.weight", "dense_h_to_4h.weight",
-        "dense_h_to_4h.bias"
+        "dense_h_to_4h.bias", "dense_h_to_4h.qweight", "dense_h_to_4h.qzeros",
+        "dense_h_to_4h.scales"
     ]
-    _row_parallel_weights = [
-        "dense.weight", "dense_4h_to_h.weight", "dense_h_to_4h.qweight",
-        "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"
-    ]
+    _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
@@ -426,19 +426,10 @@ class FalconForCausalLM(nn.Module):
                      use_safetensors: bool = False):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
-        if self.quantize_config is not None:
-            if not self.quantize_config.desc_act or (
-                    self.quantize_config.group_size == -1):
-                self._column_parallel_weights.extend([
-                    "dense.g_idx", "dense_4h_to_h.g_idx", "dense.qweight",
-                    "dense_4h_to_h.qweight"
-                ])
-            if not self.quantize_config.desc_act and (
-                    self.quantize_config.group_size != -1):
-                self._column_parallel_weights.extend([
-                    "dense.qzeros", "dense_4h_to_h.qzeros", "dense.scales",
-                    "dense_4h_to_h.scales"
-                ])
+        (self._row_parallel_weights, self._column_parallel_weights
+         ) = update_parallel_weight_names(
+            self.quantize_config, self._row_parallel_weights,
+            self._column_parallel_weights)
 
         hidden_size = self.config.hidden_size
         total_num_heads = self.config.num_attention_heads
@@ -469,11 +460,10 @@ class FalconForCausalLM(nn.Module):
 
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, use_np_cache, use_safetensors):
-            if ("dense.bias" in name or "dense_4h_to_h.bias"
-                    in name) and self.quantize_config is not None and (
-                        not self.quantize_config.desc_act
-                        or self.quantize_config.group_size == -1):
-                loaded_weight = loaded_weight / tp_size
+            loaded_weight = preprocess_quant_weight(self.quantize_config, name,
+                                                    loaded_weight,
+                                                    self._row_parallel_weights,
+                                                    tp_size)
             if "query_key_value" in name:
                 loaded_weight_size = loaded_weight.size()
                 if "g_idx" in name:
@@ -486,41 +476,23 @@ class FalconForCausalLM(nn.Module):
                     else:
                         state_dict[name].data.copy_(loaded_weight)
                     continue
-                elif any(key in name
-                         for key in ("qweight", "qzeros", "scales")):
-                    loaded_weight = loaded_weight.view(
-                        loaded_weight_size[0], total_num_kv_heads,
-                        num_query_heads_per_kv_head + 2, -1)
-                    wq = loaded_weight[:,
-                                       kv_head_start:kv_head_end, :-2].reshape(
-                                           loaded_weight_size[0], -1)
-                    wk = loaded_weight[:, kv_head_start:kv_head_end,
-                                       [-2]].reshape(loaded_weight_size[0], -1)
-                    wv = loaded_weight[:, kv_head_start:kv_head_end,
-                                       [-1]].reshape(loaded_weight_size[0], -1)
-                    dim = 1
-                else:
-                    loaded_weight = loaded_weight.view(
-                        total_num_kv_heads, num_query_heads_per_kv_head + 2,
-                        head_size, *loaded_weight_size[1:])
+                loaded_weight = loaded_weight.view(
+                    total_num_kv_heads, num_query_heads_per_kv_head + 2, -1,
+                    *loaded_weight_size[1:])
 
-                    wq = loaded_weight[:, :-2].reshape(-1,
-                                                       *loaded_weight_size[1:])
-                    wk = loaded_weight[:,
-                                       [-2]].reshape(-1,
-                                                     *loaded_weight_size[1:])
-                    wv = loaded_weight[:,
-                                       [-1]].reshape(-1,
-                                                     *loaded_weight_size[1:])
+                wq = loaded_weight[:, :-2].reshape(-1, *loaded_weight_size[1:])
+                wk = loaded_weight[:, [-2]].reshape(-1,
+                                                    *loaded_weight_size[1:])
+                wv = loaded_weight[:, [-1]].reshape(-1,
+                                                    *loaded_weight_size[1:])
 
-                    wq = wq[head_size * head_start:head_size * head_end]
-                    wk = wk[head_size * kv_head_start:head_size * kv_head_end]
-                    wv = wv[head_size * kv_head_start:head_size * kv_head_end]
-                    dim = 0
+                wq = wq[head_size * head_start:head_size * head_end]
+                wk = wk[head_size * kv_head_start:head_size * kv_head_end]
+                wv = wv[head_size * kv_head_start:head_size * kv_head_end]
 
                 if separated_q_kv:
                     loaded_weight_q = wq
-                    loaded_weight_kv = torch.cat([wk, wv], dim=dim)
+                    loaded_weight_kv = torch.cat([wk, wv], dim=0)
                     q_weight_name = name.replace("query_key_value", "query")
                     kv_weight_name = name.replace("query_key_value",
                                                   "key_value")
@@ -538,7 +510,7 @@ class FalconForCausalLM(nn.Module):
                                                  tp_rank)
                     continue
                 else:
-                    loaded_weight = torch.cat([wq, wk, wv], dim=dim)
+                    loaded_weight = torch.cat([wq, wk, wv], dim=0)
 
             param = state_dict[name]
             load_tensor_parallel_weights(param, loaded_weight, name,
