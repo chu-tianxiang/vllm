@@ -270,6 +270,8 @@ class QWenLMHeadModel(nn.Module):
                                                     tp_world_size)
 
             if "c_attn" in name:
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads

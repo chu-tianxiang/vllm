@@ -325,6 +325,8 @@ class BaiChuanBaseForCausalLM(nn.Module):
                                                     tp_world_size)
 
             if "W_pack" in name:
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 last_dim_size = loaded_weight.shape[-1]
                 num_heads = total_num_heads // tp_world_size
@@ -345,9 +347,8 @@ class BaiChuanBaseForCausalLM(nn.Module):
                 if any(key in name for key in ("qweight", "qzeros", "scales")):
                     param = param.T
                 if "g_idx" in name:
-                    param.data.copy_(loaded_weight)
-                    is_gate_up_weight = True
-                    continue
+                    name = name.replace(weight_name, "gate_up_proj")
+                    break
                 shard_size = param.shape[0] // 2
                 loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
                                               (tp_rank + 1)]

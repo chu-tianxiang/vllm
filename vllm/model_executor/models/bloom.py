@@ -329,7 +329,9 @@ class BloomForCausalLM(nn.Module):
                 num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // num_heads
-                last_dim_size = loaded_weight.shape[-1]
+                last_dim_size = loaded_weight.shape[-1] if isinstance(
+                    loaded_weight,
+                    torch.Tensor) else loaded_weight.get_shape()[-1]
                 if "qzeros" in name:
                     head_size = head_size // 32 * self.quantize_config.bits
                 if any(pattern in name

@@ -269,9 +269,8 @@ class InternLMForCausalLM(nn.Module):
                 if any(key in name for key in ("qweight", "qzeros", "scales")):
                     param = param.T
                 if "g_idx" in name:
-                    param.data.copy_(loaded_weight)
-                    is_attention_weight = True
-                    continue
+                    name = name.replace(att_weight_name, "qkv_proj")
+                    break
                 shard_size = param.shape[0] // 3
                 loaded_weight = loaded_weight[
                     shard_size * tensor_model_parallel_rank:shard_size *
@@ -293,9 +292,8 @@ class InternLMForCausalLM(nn.Module):
                 if any(key in name for key in ("qweight", "qzeros", "scales")):
                     param = param.T
                 if "g_idx" in name:
-                    param.data.copy_(loaded_weight)
-                    is_gate_up_weight = True
-                    continue
+                    name = name.replace(weight_name, "gate_up_proj")
+                    break
                 shard_size = param.shape[0] // 2
                 loaded_weight = loaded_weight[
                     shard_size * tensor_model_parallel_rank:shard_size *

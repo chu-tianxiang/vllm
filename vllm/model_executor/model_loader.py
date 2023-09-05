@@ -3,13 +3,12 @@ from typing import Type
 
 import torch
 import torch.nn as nn
-from accelerate import init_on_device
 from transformers import PretrainedConfig
 
 from vllm.config import ModelConfig
 from vllm.model_executor.models import *  # pylint: disable=wildcard-import
 from vllm.model_executor.weight_utils import initialize_dummy_weights
-from vllm.model_executor.quantize import TpGPTQQuantizer
+from vllm.model_executor.quantize import TpGPTQQuantizer, patch_tp_linear_layer
 
 # TODO(woosuk): Lazy-load the model classes.
 _MODEL_REGISTRY = {
@@ -51,8 +50,8 @@ def get_model(model_config: ModelConfig, max_tokens: int) -> nn.Module:
     if model_config.quantize_config is not None:
         quantizer = TpGPTQQuantizer.from_dict(
             model_config.quantize_config.to_dict())
-        with init_on_device(device=torch.device("cpu")):
-            model = model_class(model_config.hf_config)
+        patch_tp_linear_layer()
+        model = model_class(model_config.hf_config)
         model = quantizer.convert_model(model)
     else:
         model = model_class(model_config.hf_config)

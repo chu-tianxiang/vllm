@@ -11,6 +11,7 @@ from safetensors.torch import load_file, save_file, safe_open
 import numpy as np
 import torch
 from tqdm.auto import tqdm
+from transformers.utils.quantization_config import GPTQConfig
 
 from vllm.logger import init_logger
 
@@ -156,7 +157,7 @@ def hf_model_weights_iterator(
         for st_file in hf_weights_files:
             with safe_open(st_file, framework="pt") as f:
                 for name in f.keys():
-                    param = f.get_tensor(name)
+                    param = f.get_slice(name)
                     yield name, param
     else:
         for bin_file in hf_weights_files:
@@ -209,6 +210,10 @@ def load_tensor_parallel_weights(
             loaded_weight = loaded_weight[:, start_idx:end_idx]
             break
 
+    # convert PySafeSlice object to torch.Tensor
+    if not isinstance(loaded_weight, torch.Tensor):
+        loaded_weight = loaded_weight[:]
+
     assert param.shape == loaded_weight.shape, (
         f"{param_name} shape mismatch between model and checkpoint: "
         f"{param.shape} != {loaded_weight.shape}")
@@ -228,7 +233,8 @@ def initialize_dummy_weights(
     values between -1e-3 and 1e-3 works well for most models.
     """
     for param in model.state_dict().values():
-        param.data.uniform_(low, high)
+        if torch.is_floating_point(param):
+            param.data.uniform_(low, high)
 
 
 def update_parallel_weight_names(
@@ -236,8 +242,12 @@ def update_parallel_weight_names(
     row_parallel_weights_names: List[str],
     column_parallel_weights_names: List[str],
 ) -> Tuple[List[str], List[str]]:
-    if quantize_config is None or (
-        quantize_config.desc_act and quantize_config.group_size != -1):
+    """Different GPTQ configs have different tensor parallel schemes.
+    So we need to update the row and column parallel weight names to match the
+    tensor parallel scheme.
+    """
+    if quantize_config is None or (quantize_config.desc_act
+                                   and quantize_config.group_size != -1):
         return row_parallel_weights_names, column_parallel_weights_names
 
     row_parallel_layers = [
@@ -253,19 +263,20 @@ def update_parallel_weight_names(
     if not quantize_config.desc_act and quantize_config.group_size != -1:
         row_parallel_weights_names += [
             q.replace("weight", "qzeros") for q in row_parallel_layers
-        ] + [
-            q.replace("weight", "scales") for q in row_parallel_layers
-        ]
+        ] + [q.replace("weight", "scales") for q in row_parallel_layers]
 
     return row_parallel_weights_names, column_parallel_weights_names
 
 
-def preprocess_quant_weight(quantize_config: Any, param_name: str,
-                            loaded_weight: torch.Tensor,
+def preprocess_quant_weight(quantize_config: Optional[GPTQConfig],
+                            param_name: str, loaded_weight: Any,
                             row_parallel_weights_names: List[str],
                             tp_world_size: int) -> torch.Tensor:
+    """Preprocess the quantized weight for the model."""
     if quantize_config is None:
         return loaded_weight
+    # QuantLinear layer adds bias before gathering the result. So we divide the
+    # bias by the tensor parallel size here.
     if not quantize_config.desc_act or quantize_config.group_size == -1:
         row_parallel_bias_names = [
             p.replace(".weight", ".bias") for p in row_parallel_weights_names
@@ -273,8 +284,15 @@ def preprocess_quant_weight(quantize_config: Any, param_name: str,
         ]
         for p in row_parallel_bias_names:
             if p in param_name:
+                # convert PySafeSlice object to torch.Tensor
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 loaded_weight = loaded_weight / tp_world_size
                 break
+    # QuantLinear weights are in input_dim x output_dim while normal Linear
+    # layers have weight dimensions reversed. So transpose them here.
     if any(p in param_name for p in ("qweight", "qzeros", "scales")):
+        if not isinstance(loaded_weight, torch.Tensor):
+            loaded_weight = loaded_weight[:]
         loaded_weight = loaded_weight.T.contiguous()
     return loaded_weight

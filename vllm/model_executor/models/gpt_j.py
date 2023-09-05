@@ -251,9 +251,8 @@ class GPTJForCausalLM(nn.Module):
                     param = param.T
 
                 if "g_idx" in name:
-                    param.data.copy_(loaded_weight)
-                    is_attention_weight = True
-                    continue
+                    name = name.replace(att_weight_name, "qkv_proj")
+                    break
                 shard_size = param.shape[0] // 3
                 loaded_weight = loaded_weight[shard_size * tp_rank:shard_size *
                                               (tp_rank + 1)]

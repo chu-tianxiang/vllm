@@ -426,10 +426,10 @@ class FalconForCausalLM(nn.Module):
                      use_safetensors: bool = False):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
-        (self._row_parallel_weights, self._column_parallel_weights
-         ) = update_parallel_weight_names(
-            self.quantize_config, self._row_parallel_weights,
-            self._column_parallel_weights)
+        (self._row_parallel_weights,
+         self._column_parallel_weights) = update_parallel_weight_names(
+             self.quantize_config, self._row_parallel_weights,
+             self._column_parallel_weights)
 
         hidden_size = self.config.hidden_size
         total_num_heads = self.config.num_attention_heads
@@ -465,6 +465,8 @@ class FalconForCausalLM(nn.Module):
                                                     self._row_parallel_weights,
                                                     tp_size)
             if "query_key_value" in name:
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 loaded_weight_size = loaded_weight.size()
                 if "g_idx" in name:
                     if separated_q_kv:

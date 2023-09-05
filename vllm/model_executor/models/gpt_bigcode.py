@@ -300,6 +300,8 @@ class GPTBigCodeForCausalLM(nn.Module):
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor parallelism is used, we shard the weights along
                 # the head dimension.
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 if "g_idx" in name:
                     if self.config.multi_query:
                         q_idx_name = name.replace("c_attn", "c_attn_q")

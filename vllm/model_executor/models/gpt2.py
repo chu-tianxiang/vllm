@@ -273,6 +273,8 @@ class GPT2LMHeadModel(nn.Module):
                     continue
                 if not name.endswith(".weight"):
                     continue
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 loaded_weight = loaded_weight.t()
 
             param = state_dict[name]
@@ -288,6 +290,8 @@ class GPT2LMHeadModel(nn.Module):
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor parallelism is used, we shard the weights along
                 # the head dimension.
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads

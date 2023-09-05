@@ -2,6 +2,7 @@
 # https://github.com/huggingface/optimum/blob/main/optimum/gptq/quantizer.py
 """Utilities for quantizing models."""
 from typing import List, Optional
+from functools import partialmethod
 
 from torch import nn
 from transformers.pytorch_utils import Conv1D
@@ -191,6 +192,9 @@ class TpGPTQQuantizer(GPTQQuantizer):
                 elif isinstance(tmp, RowParallelLinear):
                     in_features = tmp.input_size
                     out_features = tmp.output_size
+                    # Quant linear with group_size and desc_act cannot be
+                    # splitted. So we simply gather the input and calculate
+                    # without tensor parallel.
                     if not self.desc_act or self.group_size == -1:
                         quant_class = RowParallelQuantLinear
                         kwargs.update({
@@ -225,3 +229,11 @@ class TpGPTQQuantizer(GPTQQuantizer):
         return autogptq_post_init(model,
                                   use_act_order=self.desc_act,
                                   max_input_length=max_input_length)
+
+
+def patch_tp_linear_layer():
+    """ Patch linear layer to use cpu initialization."""
+    ColumnParallelLinear.__init__ = partialmethod(
+        ColumnParallelLinear.__init__, use_cpu_initialization=True)
+    RowParallelLinear.__init__ = partialmethod(RowParallelLinear.__init__,
+                                               use_cpu_initialization=True)

@@ -269,6 +269,8 @@ class MPTForCausalLM(nn.Module):
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor model parallelism is used, we need to shard
                 # the weight along the hidden dimension.
+                if not isinstance(loaded_weight, torch.Tensor):
+                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads
