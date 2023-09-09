@@ -323,14 +323,14 @@ class BaiChuanBaseForCausalLM(nn.Module):
                                                     self._row_parallel_weights,
                                                     tp_world_size)
 
-            if "W_pack" in name:
+            if "W_pack" in name and "g_idx" not in name:
                 loaded_weight = convert_pyslice_to_tensor(loaded_weight)
                 total_num_heads = self.config.num_attention_heads
                 last_dim_size = loaded_weight.shape[-1]
                 num_heads = total_num_heads // tp_world_size
                 head_start = tp_rank * num_heads
                 head_end = (tp_rank + 1) * num_heads
-                if "bias" in name or "g_idx" in name:
+                if "bias" in name:
                     continue
                 loaded_weight = loaded_weight.view(3, total_num_heads, -1,
                                                    last_dim_size)
