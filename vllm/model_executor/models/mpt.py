@@ -10,10 +10,12 @@ from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.attention import PagedAttentionWithALiBi
 from vllm.model_executor.layers.sampler import Sampler
-from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
+from vllm.model_executor.weight_utils import (convert_pyslice_to_tensor,
+                                              hf_model_weights_iterator,
                                               load_tensor_parallel_weights,
                                               preprocess_quant_weight,
                                               update_parallel_weight_names)
+
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -248,8 +250,7 @@ class MPTForCausalLM(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False,
-                     use_safetensors: bool = False):
+                     load_format: str = "auto"):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
@@ -258,19 +259,16 @@ class MPTForCausalLM(nn.Module):
              self.quantize_config, self._row_parallel_weights,
              self._column_parallel_weights)
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+                model_name_or_path, cache_dir, load_format):
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,
                                                     loaded_weight,
                                                     self._row_parallel_weights,
                                                     tp_world_size)
-
             if "Wqkv" in name:
                 # NOTE(woosuk): MPT's fused QKV has the shape of
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor model parallelism is used, we need to shard
                 # the weight along the hidden dimension.
-                if not isinstance(loaded_weight, torch.Tensor):
-                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads
@@ -278,6 +276,7 @@ class MPTForCausalLM(nn.Module):
                 head_start = tp_rank * num_heads
                 head_end = (tp_rank + 1) * num_heads
                 last_dim_size = loaded_weight.shape[-1]
+                loaded_weight = convert_pyslice_to_tensor(loaded_weight)
 
                 if any(
                         name.endswith(p) for p in (".weight", ".qweight",

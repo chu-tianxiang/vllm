@@ -31,7 +31,8 @@ from vllm.model_executor.layers.attention import (PagedAttention,
                                                   PagedAttentionWithALiBi,
                                                   PagedAttentionWithRoPE)
 from vllm.model_executor.layers.sampler import Sampler
-from vllm.model_executor.weight_utils import (hf_model_weights_iterator,
+from vllm.model_executor.weight_utils import (convert_pyslice_to_tensor,
+                                              hf_model_weights_iterator,
                                               load_tensor_parallel_weights,
                                               preprocess_quant_weight,
                                               update_parallel_weight_names)
@@ -422,8 +423,7 @@ class FalconForCausalLM(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False,
-                     use_safetensors: bool = False):
+                     load_format: str = "auto"):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
         (self._row_parallel_weights,
@@ -459,14 +459,14 @@ class FalconForCausalLM(nn.Module):
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+                model_name_or_path, cache_dir, load_format):
+
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,
                                                     loaded_weight,
                                                     self._row_parallel_weights,
                                                     tp_size)
             if "query_key_value" in name:
-                if not isinstance(loaded_weight, torch.Tensor):
-                    loaded_weight = loaded_weight[:]
+                loaded_weight = convert_pyslice_to_tensor(loaded_weight)
                 loaded_weight_size = loaded_weight.size()
                 if "g_idx" in name:
                     if separated_q_kv:
@@ -488,6 +488,7 @@ class FalconForCausalLM(nn.Module):
                 wv = loaded_weight[:, [-1]].reshape(-1,
                                                     *loaded_weight_size[1:])
 
+                head_size = loaded_weight.shape[2]
                 wq = wq[head_size * head_start:head_size * head_end]
                 wk = wk[head_size * kv_head_start:head_size * kv_head_end]
                 wv = wv[head_size * kv_head_start:head_size * kv_head_end]

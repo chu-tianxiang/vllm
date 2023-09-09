@@ -32,9 +32,9 @@ from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.attention import PagedAttention
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (
-    hf_model_weights_iterator, load_padded_tensor_parallel_vocab,
-    load_tensor_parallel_weights, preprocess_quant_weight,
-    update_parallel_weight_names)
+    convert_pyslice_to_tensor, hf_model_weights_iterator,
+    load_padded_tensor_parallel_vocab, load_tensor_parallel_weights,
+    preprocess_quant_weight, update_parallel_weight_names)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.parallel_utils.tensor_parallel import (
@@ -237,8 +237,7 @@ class GPT2LMHeadModel(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False,
-                     use_safetensors: bool = False):
+                     load_format: str = "auto"):
         tensor_model_parallel_world_size = (
             get_tensor_model_parallel_world_size())
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
@@ -249,7 +248,7 @@ class GPT2LMHeadModel(nn.Module):
              self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+                model_name_or_path, cache_dir, load_format):
             if "lm_head.weight" in name:
                 # GPT-2 ties the weights of the embedding layer and the final
                 # linear layer.
@@ -265,6 +264,7 @@ class GPT2LMHeadModel(nn.Module):
             loaded_weight = preprocess_quant_weight(
                 self.quantize_config, name, loaded_weight,
                 self._row_parallel_weights, tensor_model_parallel_world_size)
+            loaded_weight = convert_pyslice_to_tensor(loaded_weight)
 
             # The HF's GPT-2 implementation uses Conv1D instead of Linear.
             # Because of this, we need to transpose the weights.
@@ -273,8 +273,6 @@ class GPT2LMHeadModel(nn.Module):
                     continue
                 if not name.endswith(".weight"):
                     continue
-                if not isinstance(loaded_weight, torch.Tensor):
-                    loaded_weight = loaded_weight[:]
                 loaded_weight = loaded_weight.t()
 
             param = state_dict[name]
@@ -290,8 +288,6 @@ class GPT2LMHeadModel(nn.Module):
                 # [3 * num_heads * head_size, hidden_size].
                 # When tensor parallelism is used, we shard the weights along
                 # the head dimension.
-                if not isinstance(loaded_weight, torch.Tensor):
-                    loaded_weight = loaded_weight[:]
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads

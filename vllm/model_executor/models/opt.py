@@ -300,8 +300,7 @@ class OPTForCausalLM(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False,
-                     use_safetensors: bool = False):
+                     load_format: str = "auto"):
         tensor_model_parallel_rank = get_tensor_model_parallel_rank()
         tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
         )
@@ -312,7 +311,7 @@ class OPTForCausalLM(nn.Module):
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+                model_name_or_path, cache_dir, load_format):
             if "lm_head.weight" in name:
                 continue
 

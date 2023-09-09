@@ -19,6 +19,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.attention import PagedAttentionWithRoPE
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.weight_utils import (
+    convert_pyslice_to_tensor,
     hf_model_weights_iterator,
     load_padded_tensor_parallel_vocab,
     load_tensor_parallel_weights,
@@ -247,11 +248,12 @@ class QWenLMHeadModel(nn.Module):
     _column_parallel_weights = []
     _row_parallel_weights = ["c_proj.weight"]
 
-    def load_weights(self,
-                     model_name_or_path: str,
-                     cache_dir: Optional[str] = None,
-                     use_np_cache: bool = False,
-                     use_safetensors: bool = False):
+    def load_weights(
+        self,
+        model_name_or_path: str,
+        cache_dir: Optional[str] = None,
+        load_format: str = "auto",
+    ):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
@@ -261,7 +263,7 @@ class QWenLMHeadModel(nn.Module):
              self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, use_np_cache, use_safetensors):
+                model_name_or_path, cache_dir, load_format):
             if "rotary_emb.inv_freq" in name:
                 continue
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,
@@ -270,8 +272,7 @@ class QWenLMHeadModel(nn.Module):
                                                     tp_world_size)
 
             if "c_attn" in name:
-                if not isinstance(loaded_weight, torch.Tensor):
-                    loaded_weight = loaded_weight[:]
+                loaded_weight = convert_pyslice_to_tensor(loaded_weight)
                 total_num_heads = self.config.num_attention_heads
                 hidden_size = self.config.hidden_size
                 head_size = hidden_size // total_num_heads
