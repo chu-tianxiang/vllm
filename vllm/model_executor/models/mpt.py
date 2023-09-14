@@ -250,7 +250,8 @@ class MPTForCausalLM(nn.Module):
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     load_format: str = "auto"):
+                     load_format: str = "auto",
+                     revision: Optional[str] = None):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
         state_dict = self.state_dict()
@@ -259,7 +260,7 @@ class MPTForCausalLM(nn.Module):
              self.quantize_config, self._row_parallel_weights,
              self._column_parallel_weights)
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format):
+                model_name_or_path, cache_dir, load_format, revision):
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,
                                                     loaded_weight,
                                                     self._row_parallel_weights,

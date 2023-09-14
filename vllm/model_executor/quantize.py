@@ -154,8 +154,11 @@ class TpGPTQQuantizer(GPTQQuantizer):
                          outfeatures,
                          bias,
                          input_is_parallel=False,
+                         reduce_results=True,
                          **kwargs):
                 self.input_is_parallel = input_is_parallel
+                self.reduce_results = reduce_results
+                self.world_size = get_tensor_model_parallel_world_size()
                 super().__init__(bits, group_size, infeatures, outfeatures,
                                  bias, **kwargs)
 
@@ -164,6 +167,8 @@ class TpGPTQQuantizer(GPTQQuantizer):
                 if self.input_is_parallel:
                     input_ = gather_from_tensor_model_parallel_region(input_)
                 output = super().forward(input_).to(input_.dtype)
+                if not self.reduce_results:
+                    output = output / self.world_size
                 return output, None
 
         if isinstance(module, QuantLinear):
@@ -195,18 +200,15 @@ class TpGPTQQuantizer(GPTQQuantizer):
                     # Quant linear with group_size and desc_act cannot be
                     # splitted. So we simply gather the input and calculate
                     # without tensor parallel.
+                    kwargs.update({
+                        "input_is_parallel": tmp.input_is_parallel,
+                        "reduce_results": tmp.reduce_results
+                    })
                     if not self.desc_act or self.group_size == -1:
                         quant_class = RowParallelQuantLinear
-                        kwargs.update({
-                            "input_is_parallel": tmp.input_is_parallel,
-                            "reduce_results": tmp.reduce_results
-                        })
+                        kwargs["use_cuda_fp16"] = self.use_cuda_fp16
                     else:
                         quant_class = GatherQuantLinear
-                        kwargs.update(
-                            {"input_is_parallel": tmp.input_is_parallel})
-                if not (self.desc_act) or self.group_size == -1:
-                    kwargs["use_cuda_fp16"] = self.use_cuda_fp16
                 new_layer = quant_class(self.bits, self.group_size,
                                         in_features, out_features, True,
                                         **kwargs)

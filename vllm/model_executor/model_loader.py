@@ -73,7 +73,7 @@ def get_model(model_config: ModelConfig, max_tokens: int) -> nn.Module:
         else:
             # Load the weights from the cached or downloaded files.
             model.load_weights(model_config.model, model_config.download_dir,
-                               model_config.load_format)
+                               model_config.load_format, model_config.revision)
             model = model.cuda()
         if model_config.quantize_config is not None:
             model = quantizer.post_init_model(model, max_tokens)

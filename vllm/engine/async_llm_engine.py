@@ -230,6 +230,8 @@ class AsyncLLMEngine:
             async frontend will be executed in a separate process as the
             model workers.
         log_requests: Whether to log the requests.
+        start_engine_loop: If True, the background task to run the engine
+            will be automatically started in the generate call.
         *args, *kwargs: Arguments for LLMEngine.
     """
 
@@ -240,17 +242,18 @@ class AsyncLLMEngine:
                  engine_use_ray: bool,
                  *args,
                  log_requests: bool = True,
-                 start_engine_loop: bool = False,
+                 max_log_len: Optional[int] = None,
+                 start_engine_loop: bool = True,
                  **kwargs) -> None:
         self.worker_use_ray = worker_use_ray
         self.engine_use_ray = engine_use_ray
         self.log_requests = log_requests
+        self.max_log_len = max_log_len
         self.engine = self._init_engine(*args, **kwargs)
 
         self.request_tracker: RequestTracker = RequestTracker()
         self.background_loop = None
-        if start_engine_loop:
-            self.start_background_loop()
+        self.start_engine_loop = start_engine_loop
 
     @property
     def is_running(self) -> bool:
@@ -324,17 +327,28 @@ class AsyncLLMEngine:
         arrival_time: Optional[float] = None,
     ) -> AsyncStream:
         if self.log_requests:
+            shortened_prompt = prompt
+            shortened_token_ids = prompt_token_ids
+            if self.max_log_len is not None:
+                if shortened_prompt is not None:
+                    shortened_prompt = shortened_prompt[:self.max_log_len]
+                if shortened_token_ids is not None:
+                    shortened_token_ids = shortened_token_ids[:self.
+                                                              max_log_len]
             logger.info(f"Received request {request_id}: "
-                        f"prompt: {prompt!r}, "
+                        f"prompt: {shortened_prompt!r}, "
                         f"sampling params: {sampling_params}, "
-                        f"prompt token ids: {prompt_token_ids}.")
+                        f"prompt token ids: {shortened_token_ids}.")
 
         if not self.is_running:
-            raise AsyncEngineDeadError(
-                "Background loop is not running. If it was running, "
-                "inspect the output to find the stacktrace of the "
-                "error that caused the background loop to stop "
-                "(AsyncEngineDeadError).")
+            if self.start_engine_loop:
+                self.start_background_loop()
+            else:
+                raise AsyncEngineDeadError(
+                    "Background loop is not running. If it was running, "
+                    "inspect the output to find the stacktrace of the "
+                    "error that caused the background loop to stop "
+                    "(AsyncEngineDeadError).")
 
         stream = self.request_tracker.add_request(
             request_id,
@@ -426,7 +440,7 @@ class AsyncLLMEngine:
     @classmethod
     def from_engine_args(cls,
                          engine_args: AsyncEngineArgs,
-                         start_engine_loop: bool = False) -> "AsyncLLMEngine":
+                         start_engine_loop: bool = True) -> "AsyncLLMEngine":
         """Creates an async LLM engine from the engine arguments."""
         # Create the engine configs.
         engine_configs = engine_args.create_engine_configs()
@@ -442,5 +456,6 @@ class AsyncLLMEngine:
                      placement_group,
                      log_requests=not engine_args.disable_log_requests,
                      log_stats=not engine_args.disable_log_stats,
+                     max_log_len=engine_args.max_log_len,
                      start_engine_loop=start_engine_loop)
         return engine

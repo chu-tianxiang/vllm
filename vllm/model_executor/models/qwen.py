@@ -253,6 +253,7 @@ class QWenLMHeadModel(nn.Module):
         model_name_or_path: str,
         cache_dir: Optional[str] = None,
         load_format: str = "auto",
+        revision: Optional[str] = None,
     ):
         tp_world_size = get_tensor_model_parallel_world_size()
         tp_rank = get_tensor_model_parallel_rank()
@@ -263,7 +264,7 @@ class QWenLMHeadModel(nn.Module):
              self._column_parallel_weights)
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format):
+                model_name_or_path, cache_dir, load_format, revision):
             if "rotary_emb.inv_freq" in name:
                 continue
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,

@@ -386,11 +386,7 @@ class FalconForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.transformer = FalconModel(config)
-        self.lm_head = ColumnParallelLinear(config.hidden_size,
-                                            config.vocab_size,
-                                            bias=False,
-                                            gather_output=False,
-                                            perform_initialization=False)
+        self.lm_head_weight = self.transformer.word_embeddings.weight
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -408,22 +404,22 @@ class FalconForCausalLM(nn.Module):
             input_metadata,
             cache_events,
         )
-        next_tokens = self.sampler(self.lm_head.weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head_weight, hidden_states,
                                    input_metadata)
 
         return next_tokens
 
     _column_parallel_weights = [
-        "word_embeddings.weight", "lm_head.weight", "dense_h_to_4h.weight",
-        "dense_h_to_4h.bias", "dense_h_to_4h.qweight", "dense_h_to_4h.qzeros",
-        "dense_h_to_4h.scales"
+        "word_embeddings.weight", "dense_h_to_4h.weight", "dense_h_to_4h.bias",
+        "dense_h_to_4h.qweight", "dense_h_to_4h.qzeros", "dense_h_to_4h.scales"
     ]
     _row_parallel_weights = ["dense.weight", "dense_4h_to_h.weight"]
 
     def load_weights(self,
                      model_name_or_path: str,
                      cache_dir: Optional[str] = None,
-                     load_format: str = "auto"):
+                     load_format: str = "auto",
+                     revision: Optional[str] = None):
         tp_size = (get_tensor_model_parallel_world_size())
         tp_rank = get_tensor_model_parallel_rank()
         (self._row_parallel_weights,
@@ -459,8 +455,7 @@ class FalconForCausalLM(nn.Module):
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format):
-
+                model_name_or_path, cache_dir, load_format, revision):
             loaded_weight = preprocess_quant_weight(self.quantize_config, name,
                                                     loaded_weight,
                                                     self._row_parallel_weights,
@@ -515,7 +510,12 @@ class FalconForCausalLM(nn.Module):
                 else:
                     loaded_weight = torch.cat([wq, wk, wv], dim=0)
 
-            param = state_dict[name]
+            if name == "lm_head.weight":
+                self._column_parallel_weights.append(name)
+                # If lm_head is provided, use it instead.
+                param = self.lm_head_weight
+            else:
+                param = state_dict[name]
             load_tensor_parallel_weights(param, loaded_weight, name,
                                          self._column_parallel_weights,
                                          self._row_parallel_weights, tp_rank)
