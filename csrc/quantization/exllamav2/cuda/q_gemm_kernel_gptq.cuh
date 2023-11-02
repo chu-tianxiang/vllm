@@ -31,6 +31,7 @@ typedef void (*fp_gemm_half_q_half_gptq_kernel)
     const int,
     const int,
     const uint16_t*,
+    const int,
     const bool
 );
 
@@ -48,6 +49,7 @@ __global__ void gemm_half_q_half_gptq_kernel
     const int groups,
     const int groupsize,
     const uint16_t* __restrict__ b_q_perm,
+    const int rows_4,
     const bool clear
 )
 {

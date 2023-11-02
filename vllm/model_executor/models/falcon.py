@@ -530,17 +530,21 @@ class FalconForCausalLM(nn.Module):
                     q_param = state_dict[
                         q_weight_name].T if is_transposed else state_dict[
                             q_weight_name]
-                    load_tensor_parallel_weights(q_param, loaded_weight_q,
+                    load_tensor_parallel_weights(self, q_param,
+                                                 loaded_weight_q,
                                                  q_weight_name,
                                                  column_parallel_weights,
-                                                 row_parallel_weights, tp_rank)
+                                                 row_parallel_weights, tp_rank,
+                                                 is_transposed)
                     kv_param = state_dict[
                         kv_weight_name].T if is_transposed else state_dict[
                             kv_weight_name]
-                    load_tensor_parallel_weights(kv_param, loaded_weight_kv,
+                    load_tensor_parallel_weights(self, kv_param,
+                                                 loaded_weight_kv,
                                                  kv_weight_name,
                                                  column_parallel_weights,
-                                                 row_parallel_weights, tp_rank)
+                                                 row_parallel_weights, tp_rank,
+                                                 is_transposed)
                     continue
                 else:
                     loaded_weight = torch.cat([wq, wk, wv], dim=0)
@@ -554,6 +558,7 @@ class FalconForCausalLM(nn.Module):
                 param = state_dict[name]
                 if is_transposed:
                     param = param.T
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
-                                         row_parallel_weights, tp_rank)
+                                         row_parallel_weights, tp_rank,
+                                         is_transposed)

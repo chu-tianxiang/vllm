@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
-#include "qdq_util.cuh"
+#include "quant/qdq_util.cuh"
 
 class MatrixView_half
 {

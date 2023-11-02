@@ -358,6 +358,7 @@ class BloomForCausalLM(nn.Module):
                 loaded_weight = loaded_weight.transpose(0, 1)
                 loaded_weight = loaded_weight.reshape(-1, *weight_shape[1:])
 
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
-                                         row_parallel_weights, tp_rank)
+                                         row_parallel_weights, tp_rank,
+                                         is_transposed)

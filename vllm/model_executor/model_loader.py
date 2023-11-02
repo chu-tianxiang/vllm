@@ -38,6 +38,7 @@ _MODEL_REGISTRY = {
 _MODEL_CLASSES_SUPPORT_QUANTIZATION = {
     "awq": [LlamaForCausalLM, MistralForCausalLM],
     "squeezellm": [LlamaForCausalLM, MistralForCausalLM],
+    "exl2": [LlamaForCausalLM],
     "gptq": [
         LlamaForCausalLM,
         QWenLMHeadModel,

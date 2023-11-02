@@ -410,7 +410,8 @@ class MistralForCausalLM(nn.Module):
                                                   tensor_model_parallel_rank)
                 continue
 
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
                                          row_parallel_weights,
-                                         tensor_model_parallel_rank)
+                                         tensor_model_parallel_rank,
+                                         is_transposed)

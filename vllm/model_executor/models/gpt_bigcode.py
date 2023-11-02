@@ -363,16 +363,14 @@ class GPTBigCodeForCausalLM(nn.Module):
                     kv_param = state_dict[
                         kv_weight_name].T if is_transposed else state_dict[
                             kv_weight_name]
-                    load_tensor_parallel_weights(q_param, loaded_weight_q,
-                                                 q_weight_name,
-                                                 column_parallel_weights,
-                                                 row_parallel_weights,
-                                                 tensor_model_parallel_rank)
-                    load_tensor_parallel_weights(kv_param, loaded_weight_kv,
-                                                 kv_weight_name,
-                                                 column_parallel_weights,
-                                                 row_parallel_weights,
-                                                 tensor_model_parallel_rank)
+                    load_tensor_parallel_weights(
+                        self, q_param, loaded_weight_q, q_weight_name,
+                        column_parallel_weights, row_parallel_weights,
+                        tensor_model_parallel_rank, is_transposed)
+                    load_tensor_parallel_weights(
+                        self, kv_param, loaded_weight_kv, kv_weight_name,
+                        column_parallel_weights, row_parallel_weights,
+                        tensor_model_parallel_rank, is_transposed)
                     continue
 
             if name not in state_dict:
@@ -386,7 +384,8 @@ class GPTBigCodeForCausalLM(nn.Module):
                                                   tensor_model_parallel_rank)
                 continue
 
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
                                          row_parallel_weights,
-                                         tensor_model_parallel_rank)
+                                         tensor_model_parallel_rank,
+                                         is_transposed)

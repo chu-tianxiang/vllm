@@ -8,12 +8,15 @@ from vllm.model_executor.layers.quantized_linear.squeezellm import (
     SqueezeLLMColumnParallelLinear, SqueezeLLMRowParallelLinear)
 from vllm.model_executor.parallel_utils.layers import (ColumnParallelLinear,
                                                        RowParallelLinear)
+from vllm.model_executor.layers.quantized_linear.exl2 import (
+    EXL2ColumnParallelLinear, EXL2RowParallelLinear, EXL2Linear)
 
 _QUANTIZED_LINEAR_REGISTRY = {
     "awq": (AWQColumnParallelLinear, AWQRowParallelLinear, None),
     "gptq": (GPTQColumnParallelLinear, GPTQRowParallelLinear, GPTQLinear),
     "squeezellm":
     (SqueezeLLMColumnParallelLinear, SqueezeLLMRowParallelLinear, None),
+    "exl2": (EXL2ColumnParallelLinear, EXL2RowParallelLinear, EXL2Linear)
 }
 
 

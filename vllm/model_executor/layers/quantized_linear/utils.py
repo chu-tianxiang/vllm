@@ -3,11 +3,7 @@ from typing import Optional
 import torch
 
 from vllm.model_executor.layers.quantized_linear.gptq import (
-    GPTQColumnParallelLinear,
-    GPTQRowParallelLinear,
-    GPTQLinear,
-    ExLlamaV2DeviceTensors,
-)
+    ExLlamaV2DeviceTensors, )
 
 
 def quant_post_init(model, max_tokens: Optional[int] = None):
@@ -19,11 +15,10 @@ def quant_post_init(model, max_tokens: Optional[int] = None):
 
     model_uses_exllama = False
     for _, submodule in model.named_modules():
-        if isinstance(submodule,
-                      (GPTQColumnParallelLinear, GPTQRowParallelLinear,
-                       GPTQLinear)) and submodule.use_exllama:
+        if hasattr(submodule, "use_exllama") and submodule.use_exllama:
             model_uses_exllama = True
-            device = submodule.qweight.device
+            device = submodule.q_weight.device if hasattr(
+                submodule, "q_weight") else submodule.qweight.device
             scratch_fixed = submodule.scratch_space_fixed(max_tokens)
             fixed_bytes[device] = max(scratch_fixed,
                                       fixed_bytes.get(device, 0))
@@ -38,10 +33,9 @@ def quant_post_init(model, max_tokens: Optional[int] = None):
         model.device_tensors = device_tensors
 
         for _, submodule in model.named_modules():
-            if isinstance(submodule,
-                          (GPTQColumnParallelLinear, GPTQRowParallelLinear,
-                           GPTQLinear)) and submodule.use_exllama:
-                device = submodule.qweight.device
+            if hasattr(submodule, "use_exllama") and submodule.use_exllama:
+                device = submodule.q_weight.device if hasattr(
+                    submodule, "q_weight") else submodule.qweight.device
                 submodule.post_init(temp_dq=model.device_tensors[device])
     torch.cuda.empty_cache()
 

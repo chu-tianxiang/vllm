@@ -165,12 +165,13 @@ class EngineArgs:
                             action='store_true',
                             help='disable logging statistics')
         # Quantization settings.
-        parser.add_argument('--quantization',
-                            '-q',
-                            type=str,
-                            choices=['awq', 'gptq', 'squeezellm', None],
-                            default=None,
-                            help='Method used to quantize the weights')
+        parser.add_argument(
+            '--quantization',
+            '-q',
+            type=str,
+            choices=['awq', 'gptq', 'squeezellm', 'exl2', None],
+            default=None,
+            help='Method used to quantize the weights')
         return parser
 
     @classmethod

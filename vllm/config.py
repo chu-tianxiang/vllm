@@ -104,7 +104,7 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _verify_quantization(self) -> None:
-        supported_quantization = ["awq", "gptq", "squeezellm"]
+        supported_quantization = ["awq", "gptq", "squeezellm", "exl2"]
         if hasattr(self.hf_config, "quantization_config"
                    ) and self.hf_config.quantization_config.get(
                        "quant_method") == QuantizationMethod.GPTQ:

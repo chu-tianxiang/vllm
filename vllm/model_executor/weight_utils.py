@@ -44,6 +44,13 @@ def _shared_pointers(tensors):
     return failing
 
 
+def set_attr(obj, names, val):
+    if len(names) == 1:
+        setattr(obj, names[0], val)
+    else:
+        set_attr(getattr(obj, names[0]), names[1:], val)
+
+
 def convert_bin_to_safetensor_file(
     pt_filename: str,
     sf_filename: str,
@@ -91,6 +98,9 @@ def get_quant_config(
     if quantization == "gptq" and hasattr(hf_config, "quantization_config"):
         config = hf_config.quantization_config
         return get_quant_class(quantization).from_config(config)
+    # exl2 has no config file
+    if quantization == "exl2":
+        return get_quant_class(quantization)()
 
     is_local = os.path.isdir(model_name_or_path)
     if not is_local:
@@ -282,22 +292,24 @@ def load_padded_tensor_parallel_vocab(
 
 
 def load_tensor_parallel_weights(
+    model: torch.nn.Module,
     param: torch.Tensor,
     loaded_weight: Any,  # `torch.Tensor` or `PySafeSlice`
     param_name: str,
     column_parallel_weight_names: List[str],
     row_parallel_weight_names: List[str],
     tensor_model_parallel_rank: int,
+    is_transposed: bool,
 ) -> None:
     for p in column_parallel_weight_names:
-        if p in param_name:
+        if param_name.endswith(p):
             shard_size = param.shape[0]
             start_idx = tensor_model_parallel_rank * shard_size
             end_idx = (tensor_model_parallel_rank + 1) * shard_size
             loaded_weight = loaded_weight[start_idx:end_idx]
             break
     for p in row_parallel_weight_names:
-        if p in param_name:
+        if param_name.endswith(p):
             shard_size = param.shape[-1]
             start_idx = tensor_model_parallel_rank * shard_size
             end_idx = (tensor_model_parallel_rank + 1) * shard_size
@@ -310,10 +322,18 @@ def load_tensor_parallel_weights(
             break
 
     loaded_weight = convert_pyslice_to_tensor(loaded_weight)
-    assert param.shape == loaded_weight.shape, (
-        f"{param_name} shape mismatch between model and checkpoint: "
-        f"{param.shape} != {loaded_weight.shape}")
-    param.data.copy_(loaded_weight)
+    # assert param.shape == loaded_weight.shape, (
+    #    f"{param_name} shape mismatch between model and checkpoint: "
+    #    f"{param.shape} != {loaded_weight.shape}")
+    if param.shape != loaded_weight.shape:
+        submodules = param_name.split(".")
+        if is_transposed:
+            param = torch.nn.Parameter(loaded_weight.T, requires_grad=False)
+        else:
+            param = torch.nn.Parameter(loaded_weight, requires_grad=False)
+        set_attr(model, submodules, param)
+    else:
+        param.data.copy_(loaded_weight)
 
 
 def initialize_dummy_weights(

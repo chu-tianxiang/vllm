@@ -60,11 +60,26 @@ class LlamaMLP(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = ParallelLinear.column(hidden_size,
-                                                  2 * intermediate_size,
-                                                  bias=False,
-                                                  gather_output=False,
-                                                  quant_config=quant_config)
+        if quant_config is not None and not quant_config.merge_weight():
+            self.merge_weight = False
+            self.gate_proj = ParallelLinear.column(hidden_size,
+                                                   intermediate_size,
+                                                   bias=False,
+                                                   gather_output=False,
+                                                   quant_config=quant_config)
+            self.up_proj = ParallelLinear.column(hidden_size,
+                                                 intermediate_size,
+                                                 bias=False,
+                                                 gather_output=False,
+                                                 quant_config=quant_config)
+        else:
+            self.merge_weight = True
+            self.gate_up_proj = ParallelLinear.column(
+                hidden_size,
+                2 * intermediate_size,
+                bias=False,
+                gather_output=False,
+                quant_config=quant_config)
         self.down_proj = ParallelLinear.row(intermediate_size,
                                             hidden_size,
                                             bias=False,
@@ -76,7 +91,12 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        if self.merge_weight:
+            gate_up, _ = self.gate_up_proj(x)
+        else:
+            up, _ = self.up_proj(x)
+            gate, _ = self.gate_proj(x)
+            gate_up = torch.cat([gate, up], dim=-1)
         x = self.act_fn(gate_up)
         x, _ = self.down_proj(x)
         return x
@@ -118,15 +138,42 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = ParallelLinear.column(
-            hidden_size,
-            (self.total_num_heads +
-             2 * self.total_num_kv_heads * num_kv_heads_replicas) *
-            self.head_dim,
-            bias=False,
-            gather_output=False,
-            quant_config=quant_config,
-        )
+        if quant_config is not None and not quant_config.merge_weight():
+            self.merge_weight = False
+            self.q_proj = ParallelLinear.column(
+                hidden_size,
+                self.total_num_heads * self.head_dim,
+                bias=False,
+                gather_output=False,
+                quant_config=quant_config,
+            )
+            self.k_proj = ParallelLinear.column(
+                hidden_size,
+                self.total_num_kv_heads * num_kv_heads_replicas *
+                self.head_dim,
+                bias=False,
+                gather_output=False,
+                quant_config=quant_config,
+            )
+            self.v_proj = ParallelLinear.column(
+                hidden_size,
+                self.total_num_kv_heads * num_kv_heads_replicas *
+                self.head_dim,
+                bias=False,
+                gather_output=False,
+                quant_config=quant_config,
+            )
+        else:
+            self.merge_weight = True
+            self.qkv_proj = ParallelLinear.column(
+                hidden_size,
+                (self.total_num_heads +
+                 2 * self.total_num_kv_heads * num_kv_heads_replicas) *
+                self.head_dim,
+                bias=False,
+                gather_output=False,
+                quant_config=quant_config,
+            )
         self.o_proj = ParallelLinear.row(
             self.total_num_heads * self.head_dim,
             hidden_size,
@@ -152,8 +199,14 @@ class LlamaAttention(nn.Module):
         input_metadata: InputMetadata,
         cache_event: Optional[torch.cuda.Event],
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if self.merge_weight:
+            qkv, _ = self.qkv_proj(hidden_states)
+            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size],
+                                dim=-1)
+        else:
+            q, _ = self.q_proj(hidden_states)
+            k, _ = self.k_proj(hidden_states)
+            v, _ = self.v_proj(hidden_states)
         k_cache, v_cache = kv_cache
         attn_output = self.attn(positions, q, k, v, k_cache, v_cache,
                                 input_metadata, cache_event)
@@ -284,12 +337,15 @@ class LlamaForCausalLM(nn.Module):
         self.quant_config = quant_config
         self.model = LlamaModel(config, quant_config)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
-        # NOTE: The LM head is not quantized.
+        if quant_config is not None and quant_config.quantize_vocab():
+            lm_head_quant_config = quant_config
+        else:
+            lm_head_quant_config = None
         self.lm_head = ParallelLinear.column(config.hidden_size,
                                              vocab_size,
                                              bias=False,
                                              gather_output=False,
-                                             quant_config=None)
+                                             quant_config=lm_head_quant_config)
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -302,11 +358,12 @@ class LlamaForCausalLM(nn.Module):
     ) -> SamplerOutput:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    input_metadata, cache_events)
-        next_tokens = self.sampler(self.lm_head.weight, hidden_states,
-                                   input_metadata)
+        next_tokens = self.sampler(self.lm_head, hidden_states, input_metadata)
         return next_tokens
 
-    column_parallel_layers = []
+    column_parallel_layers = [
+        "q_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "lm_head"
+    ]
     row_parallel_layers = ["o_proj", "down_proj"]
 
     def load_weights(self,
@@ -337,6 +394,10 @@ class LlamaForCausalLM(nn.Module):
             ("v_proj", kv_proj_shard_size,
              q_proj_shard_size + kv_proj_shard_size),
         ]
+        mlp_weight = ["gate_proj", "up_proj"]
+        if self.quant_config is not None and not self.quant_config.merge_weight():
+            attention_weight_specs = []
+            mlp_weight = []
         state_dict = self.state_dict()
 
         for name, loaded_weight in hf_model_weights_iterator(
@@ -393,7 +454,7 @@ class LlamaForCausalLM(nn.Module):
                 continue
 
             is_gate_up_weight = False
-            for stride_id, weight_name in enumerate(["gate_proj", "up_proj"]):
+            for stride_id, weight_name in enumerate(mlp_weight):
                 if weight_name not in name:
                     continue
                 name = name.replace(weight_name, "gate_up_proj")
@@ -429,11 +490,14 @@ class LlamaForCausalLM(nn.Module):
             if is_transposed:
                 param = param.T
 
-            if "embed_tokens" in name or "lm_head" in name:
+            if "embed_tokens" in name or "lm_head" in name and (
+                    self.quant_config is None
+                    or not self.quant_config.quantize_vocab()):
                 load_padded_tensor_parallel_vocab(param, loaded_weight,
                                                   tp_rank)
                 continue
 
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
-                                         row_parallel_weights, tp_rank)
+                                         row_parallel_weights, tp_rank,
+                                         is_transposed)

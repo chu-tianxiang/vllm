@@ -6,8 +6,12 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "q_matrix.cuh"
-#include "q_gemm.cuh"
+#include "config.h"
+
+#include "cuda/q_matrix.cuh"
+#include "cuda/q_gemm.cuh"
+
+#include "cpp/util.h"
 
 // Some decluttering macros
 
@@ -24,6 +28,9 @@ uintptr_t make_q_matrix
     torch::Tensor q_weight,
     torch::Tensor q_perm,
     torch::Tensor q_invperm,
+    torch::Tensor q_scale,
+    torch::Tensor q_scale_max,
+    torch::Tensor q_groups,
     torch::Tensor gptq_qzeros,
     torch::Tensor gptq_scales,
     torch::Tensor gptq_g_idx,
@@ -33,11 +40,12 @@ uintptr_t make_q_matrix
     TORCH_CHECK_DTYPE(q_weight, kInt);
     TORCH_CHECK_DTYPE_OPT(q_perm, kShort);
     TORCH_CHECK_DTYPE_OPT(q_invperm, kShort);
+    TORCH_CHECK_DTYPE_OPT(q_scale, kInt);
+    TORCH_CHECK_DTYPE_OPT(q_scale_max, kHalf);
+    TORCH_CHECK_DTYPE_OPT(q_groups, kShort);
     TORCH_CHECK_DTYPE_OPT(gptq_qzeros, kInt);
     TORCH_CHECK_DTYPE_OPT(gptq_scales, kHalf);
     TORCH_CHECK_DTYPE_OPT(gptq_g_idx, kInt);
-    TORCH_CHECK_SHAPES(q_weight, 1, gptq_qzeros, 1, 8);
-    TORCH_CHECK_SHAPES(q_weight, 1, gptq_scales, 1, 1);
 
     TORCH_CHECK_SHAPES(q_perm, 0, q_invperm, 0, 1);
 
@@ -46,8 +54,20 @@ uintptr_t make_q_matrix
     int groups;
     int height;
 
-    groups = gptq_qzeros.size(0);
-    height = q_weight.size(0) * 8;
+    if (!q_scale.device().is_meta())
+    {
+        TORCH_CHECK_SHAPES(q_weight, 1, q_scale, 1, 8);
+        TORCH_CHECK_SHAPES(q_scale_max, 0, q_scale, 0, 1);
+        groups = q_scale.size(0);
+        height = q_invperm.size(0);
+    }
+    else
+    {
+        TORCH_CHECK_SHAPES(q_weight, 1, gptq_qzeros, 1, 8);
+        TORCH_CHECK_SHAPES(q_weight, 1, gptq_scales, 1, 1);
+        groups = gptq_qzeros.size(0);
+        height = q_weight.size(0) * 8;
+    }
 
     TORCH_CHECK(temp_dq.size(0) >= width * height, "Insufficient size of temp_dq buffer")
 
@@ -60,6 +80,9 @@ uintptr_t make_q_matrix
         (uint32_t*) q_weight.data_ptr(),
         q_perm.device().is_meta() ? NULL : (uint16_t*) q_perm.data_ptr(),
         q_invperm.device().is_meta() ? NULL : (uint16_t*) q_invperm.data_ptr(),
+        q_scale.device().is_meta() ? NULL : (uint32_t*) q_scale.data_ptr(),
+        q_scale_max.device().is_meta() ? NULL : (half*) q_scale_max.data_ptr(),
+        q_groups.device().is_meta() ? NULL : (uint16_t*) q_groups.data_ptr(),
         gptq_qzeros.device().is_meta() ? NULL : (uint32_t*) gptq_qzeros.data_ptr(),
         gptq_scales.device().is_meta() ? NULL : (half*) gptq_scales.data_ptr(),
         gptq_g_idx.device().is_meta() ? NULL : (uint32_t*) gptq_g_idx.data_ptr(),

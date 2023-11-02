@@ -2,6 +2,9 @@
 #define _qdq_4_cuh
 
 #include "qdq_util.cuh"
+#include "../../config.h"
+
+#if QMODE_4BIT == 1
 
 // Permutation:
 //
@@ -218,5 +221,7 @@ __forceinline__ __device__ void dequant_4bit_8_gptq
         dq[3] = __hadd2(dqh2[3], z1[0]);
     }
 }
+
+#endif
 
 #endif

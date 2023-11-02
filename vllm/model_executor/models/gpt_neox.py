@@ -309,7 +309,8 @@ class GPTNeoXForCausalLM(nn.Module):
                                                    *weight_shape[1:])
                 loaded_weight = loaded_weight.transpose(0, 1)
                 loaded_weight = loaded_weight.reshape(-1, *weight_shape[1:])
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
                                          row_parallel_weights,
-                                         tensor_model_parallel_rank)
+                                         tensor_model_parallel_rank,
+                                         is_transposed)

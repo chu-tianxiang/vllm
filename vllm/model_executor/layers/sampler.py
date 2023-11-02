@@ -1,5 +1,5 @@
 """A layer that samples the next tokens from the model's outputs."""
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -35,7 +35,7 @@ class Sampler(nn.Module):
 
     def forward(
         self,
-        embedding: torch.Tensor,
+        embedding: Union[torch.Tensor, nn.Module],
         hidden_states: torch.Tensor,
         input_metadata: InputMetadata,
         embedding_bias: Optional[torch.Tensor] = None,
@@ -91,13 +91,17 @@ class Sampler(nn.Module):
                                      prompt_logprobs, sample_logprobs)
 
 
-def _get_logits(hidden_states: torch.Tensor, embedding: torch.Tensor,
+def _get_logits(hidden_states: torch.Tensor, embedding: Union[torch.Tensor,
+                                                              nn.Module],
                 embedding_bias: Optional[torch.Tensor],
                 vocab_size: int) -> torch.Tensor:
     # Get the logits for the next tokens.
-    logits = torch.matmul(hidden_states, embedding.t())
-    if embedding_bias is not None:
-        logits += embedding_bias
+    if isinstance(embedding, nn.Module):
+        logits, _ = embedding(hidden_states)
+    else:
+        logits = torch.matmul(hidden_states, embedding.t())
+        if embedding_bias is not None:
+            logits += embedding_bias
     logits = tensor_model_parallel_all_gather(logits)
     # Remove paddings in vocab (if any).
     logits = logits[:, :vocab_size]

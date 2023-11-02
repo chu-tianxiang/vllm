@@ -359,10 +359,12 @@ class QWenLMHeadModel(nn.Module):
                 continue
 
             load_tensor_parallel_weights(
+                self,
                 param,
                 loaded_weight,
                 name,
                 column_parallel_weights,
                 row_parallel_weights,
                 tp_rank,
+                is_transposed,
             )

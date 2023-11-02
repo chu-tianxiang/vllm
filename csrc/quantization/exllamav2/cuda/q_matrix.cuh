@@ -20,9 +20,19 @@ public:
     int groups;
     int groupsize;
 
+    int rows_8;
+    int rows_6;
+    int rows_5;
+    int rows_4;
+    int rows_3;
+    int rows_2;
+
     uint32_t* cuda_q_weight = NULL;
     uint16_t* cuda_q_perm = NULL;
     uint16_t* cuda_q_invperm = NULL;
+    uint32_t* cuda_q_scale = NULL;
+    half* cuda_q_scale_max = NULL;
+    uint16_t* cuda_q_groups = NULL;
     uint32_t* cuda_gptq_qzeros = NULL;
     half* cuda_gptq_scales = NULL;
 
@@ -38,6 +48,9 @@ public:
         uint32_t* _q_weight,
         uint16_t* _q_perm,
         uint16_t* _q_invperm,
+        uint32_t* _q_scale,
+        half* _q_scale_max,
+        uint16_t* _q_groups,
 
         uint32_t* _gptq_qzeros,
         half* _gptq_scales,

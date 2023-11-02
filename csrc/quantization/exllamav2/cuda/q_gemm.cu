@@ -1,15 +1,21 @@
 #include "q_gemm.cuh"
+#include "util.cuh"
 #include "matrix_view.cuh"
+#include "../config.h"
 
-#include "qdq_4.cuh"
+#include "quant/qdq_2.cuh"
+#include "quant/qdq_3.cuh"
+#include "quant/qdq_4.cuh"
+#include "quant/qdq_5.cuh"
+#include "quant/qdq_6.cuh"
+#include "quant/qdq_8.cuh"
 
 #define BLOCK_KN_SIZE 128
 #define BLOCK_M_SIZE_MAX 8
 #define MAX_GROUPS_IN_BLOCK (BLOCK_KN_SIZE / 32)
 #define CLEAR_N_SIZE 256
-#define MAX_Q_GEMM_ROWS 50
-#define DIVIDE(x, size) (((x) + (size) - 1) / (size))
 
+#include "q_gemm_kernel.cuh"
 #include "q_gemm_kernel_gptq.cuh"
 
 #if defined(USE_ROCM)
@@ -53,31 +59,73 @@ void gemm_half_q_half_cuda_part
     bool clear
 )
 {
-    dim3 blockDim, gridDim;
-    blockDim.x = BLOCK_KN_SIZE;
-    blockDim.y = 1;
-    blockDim.z = 1;
-    gridDim.x = DIVIDE(size_n, BLOCK_KN_SIZE * 4);
-    gridDim.y = DIVIDE(size_m, m_count);
-    gridDim.z = DIVIDE(size_k, BLOCK_KN_SIZE);
+    if (!b->is_gptq)
+    {
+        dim3 blockDim, gridDim;
+        blockDim.x = BLOCK_KN_SIZE;
+        blockDim.y = 1;
+        blockDim.z = 1;
+        gridDim.x = DIVIDE(size_n, BLOCK_KN_SIZE * 4);
+        gridDim.y = DIVIDE(size_m, m_count);
+        gridDim.z = DIVIDE(size_k, BLOCK_KN_SIZE);
 
-    fp_gemm_half_q_half_gptq_kernel kernel = pick_gemm_half_q_half_gptq_kernel(true, m_count);
+        fp_gemm_half_q_half_kernel kernel = pick_gemm_half_q_half_kernel(true, m_count);
 
-    kernel<<<gridDim, blockDim>>>
-    (
-        a,
-        b->cuda_q_weight,
-        b->cuda_gptq_qzeros,
-        b->cuda_gptq_scales,
-        c,
-        size_m,
-        size_n,
-        size_k,
-        b->groups,
-        b->groupsize,
-        b->cuda_q_perm,
-        clear
-    );
+        kernel<<<gridDim, blockDim>>>
+        (
+            a,
+            b->cuda_q_weight,
+            b->cuda_q_scale,
+            b->cuda_q_scale_max,
+            c,
+            size_m,
+            size_n,
+            size_k,
+            b->groups,
+            b->groupsize,
+            b->cuda_q_perm,
+            b->rows_8,
+            b->rows_6,
+            b->rows_5,
+            b->rows_4,
+            b->rows_3,
+            b->rows_2,
+            clear
+        );
+    }
+    else
+    {
+        dim3 blockDim, gridDim;
+        blockDim.x = BLOCK_KN_SIZE;
+        blockDim.y = 1;
+        blockDim.z = 1;
+        gridDim.x = DIVIDE(size_n, BLOCK_KN_SIZE * 4);
+        gridDim.y = DIVIDE(size_m, m_count);
+        gridDim.z = DIVIDE(size_k, BLOCK_KN_SIZE);
+
+        fp_gemm_half_q_half_gptq_kernel kernel = pick_gemm_half_q_half_gptq_kernel(true, m_count);
+
+//         DBGX((uint64_t) b->cuda_q_perm);
+//         DBGI(b->rows_4);
+//         DBGI(b->height);
+
+        kernel<<<gridDim, blockDim>>>
+        (
+            a,
+            b->cuda_q_weight,
+            b->cuda_gptq_qzeros,
+            b->cuda_gptq_scales,
+            c,
+            size_m,
+            size_n,
+            size_k,
+            b->groups,
+            b->groupsize,
+            b->cuda_q_perm,
+            b->rows_4,
+            clear
+        );
+    }
 }
 
 void gemm_half_q_half_cuda
@@ -96,6 +144,7 @@ void gemm_half_q_half_cuda
 {
     if (size_m > MAX_Q_GEMM_ROWS && !force_cuda)
     {
+        //printf("cublas\n");
 
         // Reconstruct FP16 matrix, then cuBLAS
 
@@ -114,9 +163,30 @@ void gemm_half_q_half_cuda
                             a,       size_k,
                     &beta,  c,       size_n);
 
+        //const float alpha = 1.0f;
+        //const float beta = clear ? 0.0f : 1.0f;
+        //cublasSgemmEx(cublas_handle,
+        //              CUBLAS_OP_N,
+        //              CUBLAS_OP_N,
+        //              size_n, size_m, size_k,
+        //              &alpha, temp_dq, CUDA_R_16F, size_n,
+        //                      a,       CUDA_R_16F, size_k,
+        //              &beta,  c,       CUDA_R_16F, size_n);
+
+        //const float alpha = 1.0f;
+        //const float beta = clear ? 0.0f : 1.0f;
+        //cublasGemmEx(cublas_handle,
+        //             CUBLAS_OP_N, CUBLAS_OP_N,
+        //             size_n, size_m, size_k,
+        //             &alpha, temp_dq, CUDA_R_16F, size_n,
+        //                     a,       CUDA_R_16F, size_k,
+        //             &beta,  c,       CUDA_R_16F, size_n,
+        //             CUDA_R_16F, CUBLAS_GEMM_DFALT_TENSOR_OP);
     }
     else
     {
+        //printf("cuda\n");
+
         // Quantized matmul
 
         //if (clear) clear_tensor_cuda(c, size_m, size_n);

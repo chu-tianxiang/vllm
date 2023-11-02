@@ -310,6 +310,7 @@ class GPTJForCausalLM(nn.Module):
             param = state_dict[name]
             if is_transposed:
                 param = param.T
-            load_tensor_parallel_weights(param, loaded_weight, name,
+            load_tensor_parallel_weights(self, param, loaded_weight, name,
                                          column_parallel_weights,
-                                         row_parallel_weights, tp_rank)
+                                         row_parallel_weights, tp_rank,
+                                         is_transposed)
