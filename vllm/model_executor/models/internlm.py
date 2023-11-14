@@ -62,6 +62,7 @@ class InternLMAttention(nn.Module):
         self,
         hidden_size: int,
         num_heads: int,
+        bias: bool,
         rope_theta: float = 10000,
         max_position_embeddings: int = 8192,
         quant_config: Optional[QuantizationConfig] = None,
@@ -82,14 +83,14 @@ class InternLMAttention(nn.Module):
         self.qkv_proj = ParallelLinear.column(
             hidden_size,
             3 * self.total_num_heads * self.head_dim,
-            bias=True,
+            bias=bias,
             gather_output=False,
             quant_config=quant_config,
         )
         self.o_proj = ParallelLinear.row(
             self.total_num_heads * self.head_dim,
             hidden_size,
-            bias=True,
+            bias=bias,
             input_is_parallel=True,
             quant_config=quant_config,
         )
@@ -131,6 +132,7 @@ class InternLMDecoderLayer(nn.Module):
         self.self_attn = InternLMAttention(
             hidden_size=self.hidden_size,
             num_heads=config.num_attention_heads,
+            bias=config.bias,
             rope_theta=rope_theta,
             max_position_embeddings=max_position_embeddings,
             quant_config=quant_config,
