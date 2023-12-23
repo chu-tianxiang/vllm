@@ -56,6 +56,9 @@ class SqueezeLLMConfig(QuantizationConfig):
     def get_scaled_act_names(self) -> List[str]:
         return []
 
+    def merge_weight(self) -> bool:
+        return True
+
 
 class SqueezeLLMLinearMethod(LinearMethodBase):
     """Linear method for SqueezeLLM.

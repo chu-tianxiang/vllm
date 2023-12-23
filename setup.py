@@ -220,6 +220,7 @@ vllm_extension_sources = [
     "csrc/layernorm_kernels.cu",
     "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
     "csrc/quantization/gptq/q_gemm.cu",
+    "csrc/quantization/quip/e8p_gemv.cu",
     "csrc/cuda_utils_kernels.cu",
     "csrc/pybind.cpp",
 ]
@@ -321,5 +322,5 @@ setuptools.setup(
     install_requires=get_requirements(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension},
-    package_data={"vllm": ["py.typed"]},
+    package_data={"vllm": ["py.typed", "model_executor/layers/quantization/hadamard.safetensors"]},
 )
