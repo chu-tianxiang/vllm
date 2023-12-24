@@ -16,6 +16,10 @@ Easy, fast, and cheap LLM serving for everyone
 
 ---
 
+<h6>
+This has been merged into vLLM, please use the official vLLM build instead. Welcome to look at my other repos.
+</h6>
+
 *Latest News* 🔥
 - [2023/12] Added ROCm support to vLLM.
 - [2023/10] We hosted [the first vLLM meetup](https://lu.ma/first-vllm-meetup) in SF! Please find the meetup slides [here](https://docs.google.com/presentation/d/1QL-XPFXiFpDBh86DbEegFXBXFXjix4v032GhShbKf3s/edit?usp=sharing).
