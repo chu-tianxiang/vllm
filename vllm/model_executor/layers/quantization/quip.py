@@ -25,8 +25,10 @@ class QuipConfig(QuantizationConfig):
     def __init__(
         self,
         codebook: int,
+        use_rand: bool
     ) -> None:
         self.codebook = codebook
+        self.use_rand = use_rand
 
         if self.codebook != "E8P12":
             raise ValueError(
@@ -56,7 +58,8 @@ class QuipConfig(QuantizationConfig):
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "QuipConfig":
         codebook = cls.get_from_keys(config, ["codebook"])
-        return cls(codebook)
+        use_rand = cls.get_from_keys(config, ["use_rand"])
+        return cls(codebook, use_rand)
 
     def get_linear_method(self) -> "QuipLinearMethod":
         return QuipLinearMethod(self)
@@ -93,8 +96,8 @@ class QuipLinearMethod(LinearMethodBase):
             raise ValueError(
                 "Currently Quip doesn't support tensor parallel yet")
 
-        had_left, K_left, q_in_features = get_hadK(input_size)
-        had_right, K_right, q_out_features = get_hadK(output_size)
+        had_left, K_left, q_in_features = get_hadK(input_size, self.quant_config.use_rand)
+        had_right, K_right, q_out_features = get_hadK(output_size, self.quant_config.use_rand)
         weights = {
             "K_left": K_left,
             "K_right": K_right,
@@ -102,10 +105,17 @@ class QuipLinearMethod(LinearMethodBase):
             "q_out_features": q_out_features,
         }
         if had_left is not None:
-            weights["had_left"] = had_left.to(dtype=params_dtype, device="cuda")
+            weights["had_left"] = Parameter(
+                had_left.to(dtype=params_dtype, device="cuda"),
+                requires_grad=False,
+            )
+            set_weight_attrs(weights["had_left"], {"ignore_warning": True})
         if had_right is not None:
-            weights["had_right"] = had_right.to(dtype=params_dtype, device="cuda")
-
+            weights["had_right"] = Parameter(
+                had_right.to(dtype=params_dtype, device="cuda"),
+                requires_grad=False,
+            )
+            set_weight_attrs(weights["had_right"], {"ignore_warning": True})
         Qidxs = Parameter(
             torch.empty(q_out_features,
                         q_in_features // self.pack,

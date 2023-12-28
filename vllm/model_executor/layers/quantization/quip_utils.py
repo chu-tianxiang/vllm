@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+import scipy
 import torch
 import fast_hadamard_transform
 from safetensors.torch import load_file
@@ -85,15 +86,19 @@ def get_power_of_2(n):
     return k, n
 
 
-def get_hadK(n, transpose=False):
+def get_hadK(n, use_rand=True):
     exp, base = get_power_of_2(n)
+    if base == 1:
+        return None, 1, n
+    if use_rand:
+        rand_mat = torch.tensor(scipy.stats.special_ortho_group.rvs(base)).to(torch.float32)
+        return rand_mat, base, n
+
+    # Use hadamad only and add padding if cannot find one
     pad_n = next_power_of_2(n)
-    # use padding if cannot find hadamad
-    if base == 1 or exp < 2 or str(base * 4) not in HADA_TENSORS:
+    if exp < 2 or str(base * 4) not in HADA_TENSORS:
         return None, 1, pad_n
-    base_mat = HADA_TENSORS[str(base *
-                                4)].T if transpose else HADA_TENSORS[str(base *
-                                                                         4)]
+    base_mat = HADA_TENSORS[str(base * 4)]/math.sqrt(base * 4)
     return base_mat, base * 4, n
 
 
@@ -111,7 +116,7 @@ def matmul_hadU_cuda(X, hadK, K, n, transpose=False):
         hadK = hadK.T.contiguous()
     input = X.view(-1, K, n // K)
     input = fast_hadamard_transform.hadamard_transform(input.contiguous(),
-                                                       scale=1 / math.sqrt(n))
+                                                       scale=1 / math.sqrt(n // K))
     input = hadK @ input
     return input.reshape(X.shape)
 

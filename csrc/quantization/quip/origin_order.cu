@@ -130,6 +130,7 @@ static __device__ void store(
 };
 
 struct BLayout_D4 {
+static constexpr bool use_codebook = true;
 
 template <int KTilesPerIteration>
 static __device__ void load(
@@ -153,8 +154,46 @@ static __device__ void load(
 }
 };
 
+struct BLayout_HI {
+static constexpr bool use_codebook = false;
+
+template <int KTilesPerIteration>
+static __device__ void load(
+    const void* __restrict__ B,
+    const uint64_t* __restrict__ CB,
+    int32_t n,
+    int32_t k,
+    int32_t nTiles,
+    int32_t nTile,
+    int32_t kTiles,
+    int32_t kTileStart,
+    int32_t laneId,
+    f16x2x2_u32 b[KTilesPerIteration]) {
+  auto Bptr = reinterpret_cast<const uint32_t*>(B);
+  #pragma unroll
+  for (int i = 0; i < KTilesPerIteration; ++i) {
+      const int row = nTile * kNTileSize + laneId / 4;
+      const int col = (kTileStart + i) * kKTileSize / 8 + (laneId % 4) / 2;
+      // simply use code - 7.5 instead of reading codebook
+      uint32_t code = Bptr[row * k/8 + col];
+
+      const uint32_t c0 = 0x64086408;
+      const half y16_ = __float2half_rn(1.0f / 16.0f);
+      const half2 y16 = __halves2half2(y16_, y16_);
+      const half z16_ = __float2half_rn(-1024.0f / 16.0f - 8.0f);
+      const half2 z16 = __halves2half2(z16_, z16_);
+
+      uint32_t qa = code >> ((laneId & 1) * 8);
+      uint32_t q0 = (((qa & 0x000f000f) << 4)| c0);
+      uint32_t q1 = ((qa & 0x00f000f0) | c0);
+      *(half2*)(b[i].vals) = __hfma2(*((half2*)(&q0)), y16, z16);
+      *(half2*)(b[i].vals+1) = __hfma2(*((half2*)(&q1)), y16, z16);
+  }
+}
+};
 
 struct BLayout_E8 {
+static constexpr bool use_codebook = true;
 
 __device__ static inline uint64_t decode8weights(
     uint16_t weight_compressed,
@@ -184,13 +223,12 @@ __device__ static inline uint32_t decode8weights(
     int idx
 ) {
     uint8_t bits_sign = weight_compressed & 0xff; //__brev(weight_compressed) >> 24;
+    const uint32_t magic_nums[2] = {0x08040201ll, 0x80402010ll};
     uint8_t parity = __popc(bits_sign) & 1;
     uint8_t sign_vec = bits_sign ^ parity; // (parity << 7);
-    uint8_t bits_abs = (weight_compressed >> 8);
-    int64_t packed_ = codebook_abs[bits_abs];
-
-    uint32_t packed = packed_ >> (idx * 32);
-    uint32_t magic_num = idx == 0 ? 0x08040201ll : 0x80402010ll;
+    uint16_t bits_abs = (weight_compressed >> 8);
+    uint32_t packed = ((uint32_t*)codebook_abs)[(bits_abs << 1) + idx];
+    uint32_t magic_num = magic_nums[idx];
     uint32_t decoded_sign = sign_vec * magic_num;
     decoded_sign &= 0x80808080;
     decoded_sign >>= 7;
@@ -221,18 +259,16 @@ static __device__ void load(
        uint32_t decoded = decode8weights(Bptr[row * k/8 + col], (const int64_t*)CB, laneId & 1);
        half2 unpacked[2];
        uint32_t lower_half = decoded & 0x00ff00ff;
-       lower_half = (lower_half ^ 0x64806480);
+       lower_half = (lower_half ^ 0x5c805c80);
        memcpy(unpacked, &lower_half, sizeof(uint32_t));
        uint32_t upper_half = (decoded & 0xff00ff00) >> 8;
-       upper_half = (upper_half ^ 0x64806480);
+       upper_half = (upper_half ^ 0x5c805c80);
        memcpy(unpacked + 1, &upper_half, sizeof(uint32_t));
 
        const half adjust_ = __float2half_rn(-288.0f);
-       const half factor_ = __float2half(0.25f);
        const half2 adjust = __halves2half2(adjust_, adjust_);
-       const half2 factor = __halves2half2(factor_, factor_);
-       unpacked[0] = __hfma2(unpacked[0], factor, adjust);
-       unpacked[1] = __hfma2(unpacked[1], factor, adjust);
+       unpacked[0] = __hadd2(unpacked[0], adjust);
+       unpacked[1] = __hadd2(unpacked[1], adjust);
        *(reinterpret_cast<uint64_t*>(b[i].vals)) = *(reinterpret_cast<uint64_t*>(unpacked));
        //*((half*)(b[i].vals)) = unpacked[0];
        //*((half*)(b[i].vals) + 1) = unpacked[0].y;
@@ -268,10 +304,11 @@ __launch_bounds__(256) void tinygemm_m16n8k16_chunk_kernel(
     int32_t mTiles,
     int32_t nTiles,
     int32_t kTiles) {
-
   __shared__ uint64_t CB_[256];
-  CB_[threadIdx.x + threadIdx.y * 32] = CB[threadIdx.x + threadIdx.y * 32];
-  __syncthreads();
+  if (BLayout::use_codebook) {
+    CB_[threadIdx.x + threadIdx.y * 32] = CB[threadIdx.x + threadIdx.y * 32];
+    __syncthreads();
+  }
 
   auto warpId = threadIdx.y;
   auto laneId = threadIdx.x;
@@ -496,6 +533,48 @@ at::Tensor e8p_mm_origorder(
   return C_final;
 }
 
+at::Tensor hi_mm_origorder(
+    const at::Tensor& A,
+    const at::Tensor& B) {
+  c10::cuda::CUDAGuard g(A.device());
+  auto stream = at::cuda::getCurrentCUDAStream();
+
+  constexpr int Warps = 8;
+
+  // row major layout
+  auto m = A.size(0);
+  auto mTiles = divUp(m, kMTileSize);
+
+  // tensor core layout
+  auto n = B.size(0);
+  auto nTiles = divUp(n, kNTileSize);
+
+  // row major layout
+  auto k = A.size(1);
+  auto kTiles = divUp(k, kKTileSize);
+
+  // Output is a standard row-major matrix
+  auto C_final = at::empty(
+      {m, n}, at::TensorOptions().dtype(A.dtype()).device(A.device()));
+
+  auto grid = dim3(1, nTiles, mTiles);
+  auto block = dim3(kWarpSize, Warps);
+  auto kernel = tinygemm_m16n8k16_chunk_kernel<ALayout_RM, BLayout_HI, ALayout_RM, 8, 8>;
+  kernel<<<grid, block, 0, stream>>>(
+      (const half*)A.data_ptr(),
+      (const void*)B.data_ptr(),
+      nullptr,
+      (half*)C_final.data_ptr(),
+      m,
+      n,
+      k,
+      mTiles,
+      nTiles,
+      kTiles);
+
+  return C_final;
+}
+
 #define DECOMPRESS_D4_BLOCK_SIZE 256
 
 __global__ void cuda_decompress_d4_origorder_kernel(
@@ -551,21 +630,19 @@ __global__ void cuda_decompress_e8p_origorder_kernel(
 
   half2 unpacked[2][2];
   uint64_t lower_half = decoded & 0x00ff00ff00ff00ff;
-  lower_half = (lower_half ^ 0x6480648064806480);
+  lower_half = (lower_half ^ 0x5c805c805c805c80);
   memcpy(unpacked[0], &lower_half, sizeof(uint64_t));
   uint64_t upper_half = (decoded & 0xff00ff00ff00ff00) >> 8;
-  upper_half = (upper_half ^ 0x6480648064806480);
+  upper_half = (upper_half ^ 0x5c805c805c805c80);
   memcpy(unpacked[1], &upper_half, sizeof(uint64_t));
 
   const half adjust_ = __float2half_rn(-288.0f);
-  const half factor_ = __float2half(0.25f);
   const half2 adjust = __halves2half2(adjust_, adjust_);
-  const half2 factor = __halves2half2(factor_, factor_);
 
-  ((__half2*)Y)[i*4] = __hfma2(unpacked[0][0], factor, adjust); // 01
-  ((__half2*)Y)[i*4+2] = __hfma2(unpacked[0][1], factor, adjust); // 45
-  ((__half2*)Y)[i*4+1] = __hfma2(unpacked[1][0], factor, adjust); // 23
-  ((__half2*)Y)[i*4+3] = __hfma2(unpacked[1][1], factor, adjust); // 67
+  ((__half2*)Y)[i*4] = __hadd2(unpacked[0][0], adjust); // 01
+  ((__half2*)Y)[i*4+2] = __hadd2(unpacked[0][1], adjust); // 45
+  ((__half2*)Y)[i*4+1] = __hadd2(unpacked[1][0], adjust); // 23
+  ((__half2*)Y)[i*4+3] = __hadd2(unpacked[1][1], adjust); // 67
 }
 
 
@@ -595,3 +672,51 @@ void decompress_e8p_origorder(
   );
 }
 
+#define DECOMPRESS_HI_BLOCK_SIZE 256
+
+__global__ void cuda_decompress_hi_origorder_kernel(
+    const uint32_t* __restrict__ YIs,	  // m x (n/8)
+    c10::Half* __restrict__ Y             // m x n
+) {
+  const long i = threadIdx.x + DECOMPRESS_HI_BLOCK_SIZE * blockIdx.x;
+  uint32_t qa = YIs[i];
+
+  const uint32_t c0 = 0x64086408;
+  const half y16_ = __float2half_rn(1.0f / 16.0f);
+  const half2 y16 = __halves2half2(y16_, y16_);
+  const half z16_ = __float2half_rn(-1024.0f / 16.0f - 8.0f);
+  const half2 z16 = __halves2half2(z16_, z16_);
+
+
+  uint32_t q0 = (((qa & 0x000f000f) << 4) | c0);
+  uint32_t q1 = ((qa & 0x00f000f0)| c0);
+  qa >>= 8;
+  uint32_t q2 = (((qa & 0x000f000f) << 4) | c0);
+  uint32_t q3 = ((qa & 0x00f000f0) | c0);
+  ((__half2*)Y)[i*4] = __hfma2(*((half2*)(&q0)), y16, z16);
+  ((__half2*)Y)[i*4+1] = __hfma2(*((half2*)(&q1)), y16, z16);
+  ((__half2*)Y)[i*4+2] = __hfma2(*((half2*)(&q2)), y16, z16);
+  ((__half2*)Y)[i*4+3] = __hfma2(*((half2*)(&q3)), y16, z16);
+}
+
+void decompress_hi_origorder(
+    torch::Tensor YIs,      // m x (n/8)
+    torch::Tensor Y         // m x n
+){
+  size_t m = Y.sizes()[0];
+  size_t n = Y.sizes()[1];
+
+  assert(YIs.is_contiguous());
+  assert(Y.is_contiguous());
+
+  assert(YIs.sizes()[0] == m);
+  assert(YIs.sizes()[1] * 8 == n);
+
+  const dim3 threads(DECOMPRESS_HI_BLOCK_SIZE);
+  const dim3 blocks(m*n/(8*DECOMPRESS_HI_BLOCK_SIZE));
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  cuda_decompress_hi_origorder_kernel<<<blocks, threads, 0, stream>>>(
+    (uint32_t*)YIs.data_ptr<int32_t>(),
+    Y.data_ptr<c10::Half>()
+  );
+}
