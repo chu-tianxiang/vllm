@@ -103,23 +103,23 @@ def get_hadK(n, use_rand=True):
 
 
 
-def matmul_hadU_cuda(X, hadK, K, n, transpose=False):
+def matmul_hadU_cuda(X, hadK, K, n, scale=None, transpose=False):
     if n != X.shape[-1]:
         X = torch.nn.functional.pad(X, (0, n - X.shape[-1]))
 
+    had_scale = 1 / math.sqrt(n // K) if scale is None else scale / math.sqrt(n // K)
     if K == 1:
         return fast_hadamard_transform.hadamard_transform(X.contiguous(),
-                                                          scale=1 /
-                                                          math.sqrt(n))
+                                                          scale=had_scale)
 
     if transpose:
         hadK = hadK.T.contiguous()
     input = X.view(-1, K, n // K)
     input = fast_hadamard_transform.hadamard_transform(input.contiguous(),
-                                                       scale=1 / math.sqrt(n // K))
+                                                       scale=had_scale)
     input = hadK @ input
     return input.reshape(X.shape)
 
 
-def matmul_hadUt_cuda(X, hadK, K, n):
-    return matmul_hadU_cuda(X, hadK, K, n, transpose=True)
+def matmul_hadUt_cuda(X, hadK, K, n, scale=None):
+    return matmul_hadU_cuda(X, hadK, K, n, scale=scale, transpose=True)

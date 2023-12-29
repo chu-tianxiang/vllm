@@ -125,8 +125,13 @@ class QuipLinearMethod(LinearMethodBase):
             requires_grad=False,
         )
         set_weight_attrs(Qidxs, {"ignore_warning": True})
+        Wscale = Parameter(
+            torch.ones((), dtype=torch.float, device="cuda"),
+            requires_grad=False,
+        )
+        set_weight_attrs(Wscale, {"ignore_warning": True})
         SU = Parameter(
-            torch.empty(input_size,
+            torch.ones(input_size,
                         device="cuda",
                         dtype=params_dtype,
                         ),
@@ -134,7 +139,7 @@ class QuipLinearMethod(LinearMethodBase):
         )
         set_weight_attrs(SU, {"ignore_warning": True})
         SV = Parameter(
-            torch.empty(output_size,
+            torch.ones(output_size,
                         device="cuda",
                         dtype=params_dtype,
                         ),
@@ -143,6 +148,7 @@ class QuipLinearMethod(LinearMethodBase):
         set_weight_attrs(SV, {"ignore_warning": True})
         weights.update({
             "Qidxs": Qidxs,
+            "Wscale": Wscale,
             "SU": SU,
             "SV": SV,
         })
@@ -152,13 +158,23 @@ class QuipLinearMethod(LinearMethodBase):
                       weights: Dict[str, Any],
                       x: torch.Tensor,
                       bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # First run
+        if isinstance(weights["Wscale"], torch.Tensor):
+            weights["Wscale"] = weights["Wscale"].item()
+            if "SU" in weights and torch.all(weights["SU"] > 0):
+                del weights["SU"]
+            if "SV" in weights and torch.all(weights["SV"] > 0):
+                del weights["SV"]
+
         reshaped_x = x.reshape(-1, x.shape[-1])
         out_dim = weights["SV"].shape[0]
 
-        reshaped_x = reshaped_x * weights["SU"]
+        if "SU" in weights:
+            reshaped_x = reshaped_x * weights["SU"]
         reshaped_x = matmul_hadUt_cuda(reshaped_x, weights.get("had_left", None),
                                        weights["K_left"],
-                                       weights["q_in_features"])
+                                       weights["q_in_features"],
+                                       weights["Wscale"])
 
         m, n = weights["Qidxs"].shape
         if reshaped_x.size(0) < 32:
@@ -176,7 +192,8 @@ class QuipLinearMethod(LinearMethodBase):
 
         out = matmul_hadU_cuda(out, weights.get("had_right", None), weights["K_right"],
                                weights["q_out_features"])[..., :out_dim]
-        out = out * weights["SV"]
+        if "SV" in weights:
+            out = out * weights["SV"]
         out = out.view(*x.shape[:-1], out.shape[-1])
         out = out + bias if bias is not None else out
         return out

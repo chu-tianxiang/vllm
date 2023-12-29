@@ -45,11 +45,11 @@ class QWenMLP(nn.Module):
         super().__init__()
         if linear_method is not None and not linear_method.quant_config.merge_weight():
             self.merge_weight = False
-            self.gate_proj = ColumnParallelLinear(
+            self.w2 = ColumnParallelLinear(
                 hidden_size, intermediate_size,
                 bias=False,
                 linear_method=linear_method)
-            self.up_proj = ColumnParallelLinear(
+            self.w1 = ColumnParallelLinear(
                 hidden_size, intermediate_size,
                 bias=False,
                 linear_method=linear_method)
@@ -72,8 +72,8 @@ class QWenMLP(nn.Module):
         if self.merge_weight:
             gate_up, _ = self.gate_up_proj(x)
         else:
-            up, _ = self.up_proj(x)
-            gate, _ = self.gate_proj(x)
+            up, _ = self.w1(x)
+            gate, _ = self.w2(x)
             gate_up = torch.cat([gate, up], dim=-1)
         x = self.act_fn(gate_up)
         x, _ = self.c_proj(x)
