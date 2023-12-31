@@ -280,14 +280,6 @@ class QWenLMHeadModel(nn.Module):
             ("gate_up_proj", "w2", 0),
             ("gate_up_proj", "w1", 1),
         ]
-        stacked_params_mapping = [
-            # (param_name, shard_name, shard_id)
-            ("qkv_proj", "q_proj", "q"),
-            ("qkv_proj", "k_proj", "k"),
-            ("qkv_proj", "v_proj", "v"),
-            ("gate_up_proj", "gate_proj", 0),
-            ("gate_up_proj", "up_proj", 1),
-        ]
         if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
