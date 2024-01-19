@@ -8,6 +8,24 @@ from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 
+GGML_QUANT_SIZES = {
+    0:  (1, 4),
+    1:  (1, 2),
+    2: (32, 2 + 16),
+    3: (32, 2 + 2 + 16),
+    6: (32, 2 + 4 + 16),
+    7: (32, 2 + 2 + 4 + 16),
+    8: (32, 2 + 32),
+    9: (32, 4 + 4 + 32),
+    10: (256, 2 + 2 + 256 // 16 + 256 // 4),
+    11: (256, 2 + 256 // 4 + 256 // 8 + 12),
+    12: (256, 2 + 2 + 256 // 2 + 12),
+    13: (256, 2 + 2 + 256 // 2 + 256 // 8 + 12),
+    14: (256, 2 + 256 // 2 + 256 // 4 + 256 // 16),
+    15: (256, 4 + 256 + 256 // 8),
+    16: (256, 2 + 256 // 4),
+    17: (256, 2 + 256 // 4 + 256 // 32),
+}
 
 class GGUFConfig(QuantizationConfig):
     """Config class for GGUF"""
@@ -85,6 +103,10 @@ class GGUFLinearMethod(LinearMethodBase):
                       bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         if isinstance(weights["weight_type"], torch.Tensor):
             weights["weight_type"] = int(weights["weight_type"])
+            # Check tensor parallel shape here on first pass
+            block_size = GGML_QUANT_SIZES[weights["weight_type"]][1]
+            if weights["weight"].shape[1] % block_size != 0:
+                raise ValueError("Size is not aligned with the quantized weight shape.")
 
         weight = weights["weight"]
         weight_type = weights["weight_type"]
