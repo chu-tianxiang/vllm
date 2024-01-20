@@ -79,13 +79,29 @@ class PhiAttention(nn.Module):
                           tensor_model_parallel_world_size)
 
         # pylint: disable=C0103
-        self.qkv_proj = QKVParallelLinear(
-            self.hidden_size,
-            self.head_size,
-            self.total_num_heads,
-            bias=True,
-            linear_method=linear_method,
-        )
+        if linear_method is not None and not linear_method.quant_config.merge_weight():
+            self.merge_weight = False
+            self.q_proj = ColumnParallelLinear(
+                self.hidden_size, self.hidden_size,
+                bias=True,
+                linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(
+                self.hidden_size, self.hidden_size,
+                bias=True,
+                linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(
+                self.hidden_size, self.hidden_size,
+                bias=True,
+                linear_method=linear_method)
+        else:
+            self.merge_weight = True
+            self.qkv_proj = QKVParallelLinear(
+                self.hidden_size,
+                self.head_size,
+                self.total_num_heads,
+                bias=True,
+                linear_method=linear_method,
+            )
         self.dense = RowParallelLinear(
             self.hidden_size,
             self.hidden_size,
@@ -102,11 +118,13 @@ class PhiAttention(nn.Module):
         # https://huggingface.co/microsoft/phi-1_5/blob/d212a789620c380ff32ca1d1ee9943a777360987/modeling_phi.py#L518
         rope_theta = 10000
         max_position_embeddings = getattr(config, "n_positions", 2048)
+        is_neox_style = True if linear_method is None or linear_method.quant_config.rope_style() is None else linear_method.quant_config.rope_style()
         self.rotary_emb = get_rope(
             self.head_size,
             rotary_dim=rotary_dim,
             max_position=max_position_embeddings,
             base=rope_theta,
+            is_neox_style=is_neox_style,
         )
         self.attn = PagedAttention(self.num_heads, self.head_size, scaling)
 
@@ -117,8 +135,13 @@ class PhiAttention(nn.Module):
         kv_cache: KVCache,
         input_metadata: InputMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.chunk(chunks=3, dim=-1)
+        if self.merge_weight:
+            qkv, _ = self.qkv_proj(hidden_states)
+            q, k, v = qkv.chunk(chunks=3, dim=-1)
+        else:
+            q, _ = self.q_proj(hidden_states)
+            k, _ = self.k_proj(hidden_states)
+            v, _ = self.v_proj(hidden_states)
         q, k = self.rotary_emb(position_ids, q, k)
         k_cache, v_cache = kv_cache
         attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
@@ -275,6 +298,8 @@ class PhiForCausalLM(nn.Module):
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v")
         ]
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+            stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
 
         for name, loaded_weight in hf_model_weights_iterator(

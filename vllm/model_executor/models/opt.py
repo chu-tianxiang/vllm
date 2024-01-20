@@ -76,13 +76,29 @@ class OPTAttention(nn.Module):
         self.head_dim = embed_dim // total_num_heads
         self.scaling = self.head_dim**-0.5
 
-        self.qkv_proj = QKVParallelLinear(
-            embed_dim,
-            self.head_dim,
-            total_num_heads,
-            bias=bias,
-            linear_method=linear_method,
-        )
+        if linear_method is not None and not linear_method.quant_config.merge_weight():
+            self.merge_weight = False
+            self.q_proj = ColumnParallelLinear(
+                embed_dim, embed_dim,
+                bias=bias,
+                linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(
+                embed_dim, embed_dim,
+                bias=bias,
+                linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(
+                embed_dim, embed_dim,
+                bias=bias,
+                linear_method=linear_method)
+        else:
+            self.merge_weight = True
+            self.qkv_proj = QKVParallelLinear(
+                embed_dim,
+                self.head_dim,
+                total_num_heads,
+                bias=bias,
+                linear_method=linear_method,
+            )
         self.out_proj = RowParallelLinear(
             embed_dim,
             embed_dim,
@@ -99,8 +115,13 @@ class OPTAttention(nn.Module):
         kv_cache: KVCache,
         input_metadata: InputMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.chunk(chunks=3, dim=-1)
+        if self.merge_weight:
+            qkv, _ = self.qkv_proj(hidden_states)
+            q, k, v = qkv.chunk(chunks=3, dim=-1)
+        else:
+            q, _ = self.q_proj(hidden_states)
+            k, _ = self.k_proj(hidden_states)
+            v, _ = self.v_proj(hidden_states)
         key_cache, value_cache = kv_cache
         attn_output = self.attn(q, k, v, key_cache, value_cache,
                                 input_metadata)
@@ -325,6 +346,8 @@ class OPTForCausalLM(nn.Module):
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v"),
         ]
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+            stacked_params_mapping = []
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, load_format, revision):
