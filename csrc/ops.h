@@ -89,3 +89,17 @@ torch::Tensor gptq_gemm(
 void gptq_shuffle(
   torch::Tensor q_weight,
   torch::Tensor q_perm);
+
+torch::Tensor ggml_dequantize(
+    torch::Tensor X,
+    int8_t type,
+    int64_t m,
+    int64_t n
+);
+
+torch::Tensor ggml_mul_mat_vec(
+    torch::Tensor W,  // quant weight
+    torch::Tensor X,  // input
+    int8_t type,
+    int64_t m
+);

@@ -194,13 +194,19 @@ class ColumnParallelLinear(torch.nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
         output_dim = getattr(param, "output_dim", None)
         param_data = param.data
         if output_dim is not None:
-            shard_size = param_data.shape[output_dim]
+            if loaded_weight.shape[output_dim] % tp_size != 0:
+                raise ValueError("Size is not aligned with the quantized weight shape")
+            shard_size = loaded_weight.shape[output_dim] // tp_size
             start_idx = tp_rank * shard_size
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
                                                  shard_size)
+        if isinstance(param, torch.nn.parameter.UninitializedParameter):
+            param.materialize(loaded_weight.shape, dtype=loaded_weight.dtype)
+            param_data = param.data
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
@@ -521,13 +527,20 @@ class RowParallelLinear(torch.nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
+        tp_size = get_tensor_model_parallel_world_size()
         input_dim = getattr(param, "input_dim", None)
         param_data = param.data
         if input_dim is not None:
-            shard_size = param_data.shape[input_dim]
+            if loaded_weight.shape[input_dim] % tp_size != 0:
+                raise ValueError("Size is not aligned with the quantized weight shape")
+
+            shard_size = loaded_weight.shape[input_dim] // tp_size
             start_idx = tp_rank * shard_size
             loaded_weight = loaded_weight.narrow(input_dim, start_idx,
                                                  shard_size)
+        if isinstance(param, torch.nn.parameter.UninitializedParameter):
+            param.materialize(loaded_weight.shape, dtype=loaded_weight.dtype)
+            param_data = param.data
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
