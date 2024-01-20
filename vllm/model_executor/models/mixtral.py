@@ -403,7 +403,6 @@ class MixtralForCausalLM(nn.Module):
         ]
         if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
             stacked_params_mapping = []
-
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path,

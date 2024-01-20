@@ -16,7 +16,8 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
-                                               RowParallelLinear)
+                                               RowParallelLinear,
+                                               ColumnParallelLinear)
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -42,10 +43,22 @@ class QWenMLP(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size, [intermediate_size] * 2,
-            bias=False,
-            linear_method=linear_method)
+        if linear_method is not None and not linear_method.quant_config.merge_weight():
+            self.merge_weight = False
+            self.w2 = ColumnParallelLinear(
+                hidden_size, intermediate_size,
+                bias=False,
+                linear_method=linear_method)
+            self.w1 = ColumnParallelLinear(
+                hidden_size, intermediate_size,
+                bias=False,
+                linear_method=linear_method)
+        else:
+            self.merge_weight = True
+            self.gate_up_proj = MergedColumnParallelLinear(
+                hidden_size, [intermediate_size] * 2,
+                bias=False,
+                linear_method=linear_method)
         self.c_proj = RowParallelLinear(intermediate_size,
                                         hidden_size,
                                         bias=False,
@@ -56,7 +69,12 @@ class QWenMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        if self.merge_weight:
+            gate_up, _ = self.gate_up_proj(x)
+        else:
+            up, _ = self.w1(x)
+            gate, _ = self.w2(x)
+            gate_up = torch.cat([gate, up], dim=-1)
         x = self.act_fn(gate_up)
         x, _ = self.c_proj(x)
         return x
@@ -262,6 +280,8 @@ class QWenLMHeadModel(nn.Module):
             ("gate_up_proj", "w2", 0),
             ("gate_up_proj", "w1", 1),
         ]
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+            stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, load_format, revision):

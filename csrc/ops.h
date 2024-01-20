@@ -105,3 +105,14 @@ torch::Tensor ggml_mul_mat_vec(
     int8_t type,
     int64_t m
 );
+
+at::Tensor e8p_mm_origorder(
+    const at::Tensor& A,
+    const at::Tensor& B,
+    const at::Tensor& CB);
+
+void decompress_e8p_origorder(
+    torch::Tensor YIs,
+    torch::Tensor CB,
+    torch::Tensor &Y
+);

@@ -257,6 +257,7 @@ vllm_extension_sources = [
 
 if _is_cuda():
     vllm_extension_sources.append("csrc/quantization/awq/gemm_kernels.cu")
+    vllm_extension_sources.append("csrc/quantization/quip/origin_order.cu")
 
 if not _is_neuron():
     vllm_extension = CUDAExtension(
@@ -334,7 +335,7 @@ def get_requirements() -> List[str]:
     return requirements
 
 
-package_data = {"vllm": ["py.typed"]}
+package_data = {"vllm": ["py.typed", "model_executor/layers/quantization/hadamard.safetensors"]}
 if os.environ.get("VLLM_USE_PRECOMPILED"):
     ext_modules = []
     package_data["vllm"].append("*.so")
@@ -367,5 +368,5 @@ setuptools.setup(
     install_requires=get_requirements(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension} if not _is_neuron() else {},
-    package_data=package_data,
+    package_data={"vllm": package_data},
 )
