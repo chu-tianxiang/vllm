@@ -258,6 +258,7 @@ vllm_extension_sources = [
 if _is_cuda():
     vllm_extension_sources.append("csrc/quantization/awq/gemm_kernels.cu")
     vllm_extension_sources.append("csrc/quantization/quip/origin_order.cu")
+    vllm_extension_sources.append("csrc/quantization/marlin/marlin_cuda_kernel.cu")
 
 if not _is_neuron():
     vllm_extension = CUDAExtension(
