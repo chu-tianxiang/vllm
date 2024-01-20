@@ -249,7 +249,7 @@ vllm_extension_sources = [
     "csrc/activation_kernels.cu",
     "csrc/layernorm_kernels.cu",
     "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
-    "csrc/quantization/gguf/gguf_kernels.cu"
+    "csrc/quantization/gguf/gguf_kernel.cu",
     "csrc/quantization/gptq/q_gemm.cu",
     "csrc/cuda_utils_kernels.cu",
     "csrc/pybind.cpp",
@@ -368,5 +368,5 @@ setuptools.setup(
     install_requires=get_requirements(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension} if not _is_neuron() else {},
-    package_data={"vllm": package_data},
+    package_data=package_data,
 )

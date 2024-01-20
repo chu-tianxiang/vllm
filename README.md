@@ -16,9 +16,24 @@ Easy, fast, and cheap LLM serving for everyone
 
 ---
 
-<h5>
-This has been merged into vLLM, please use the official vLLM build instead. Welcome to look at my other repos.
-</h5>
+4-bit GPTQ support has been merged into vLLM, please use the official vLLM build instead.
+
+This repo currently supports a varities of other quantization methods including:
+
+* GPTQ 2/3/8-bit
+In addition to GPTQ 4bit quantization, this repo also adds support to other bit of GPTQ models.
+
+* GGUF
+You have to convert the `gguf` to torch dict before running, checkout the `examples/convert_gguf_to_torch.py`. Only llama and mistral are supported.
+```
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python convert_gguf_to_torch.py --input mixtral-8x7b-instruct-v0.1.Q2_K.gguf --output mixtral-q2k
+
+python -m vllm.entrypoints.api_server --model mixtral-q2k --quantization gguf
+```
+
+* QUIP#
+Only support 2-bit models quantized using [QuIP-for-all](https://github.com/chu-tianxiang/QuIP-for-all).
+
 
 **The Second vLLM Bay Area Meetup (Jan 31st 5pm-7:30pm PT)**
 

@@ -70,6 +70,9 @@ class QuipConfig(QuantizationConfig):
     def merge_weight(self) -> bool:
         return False
 
+    def rope_style(self) -> Optional[bool]:
+        return None
+
 
 class QuipLinearMethod(LinearMethodBase):
     """Linear method for Quip.
@@ -167,7 +170,7 @@ class QuipLinearMethod(LinearMethodBase):
                 del weights["SV"]
 
         reshaped_x = x.reshape(-1, x.shape[-1])
-        out_dim = weights["SV"].shape[0]
+        out_dim = weights["Qidxs"].shape[0]
 
         if "SU" in weights:
             reshaped_x = reshaped_x * weights["SU"]
