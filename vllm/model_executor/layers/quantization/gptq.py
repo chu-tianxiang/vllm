@@ -44,7 +44,7 @@ def _get_perms():
 
 _perm, _scale_perm, _scale_perm_single = _get_perms()
 
-def pemute_weight(qweight, scale, group_size):
+def pemute_weight(qweight, scale, group_size, g_idx=None):
     # unpack and permute qweight
     w = torch.bitwise_right_shift(
         torch.unsqueeze(qweight, 1).expand(-1, 8, -1),
@@ -52,6 +52,8 @@ def pemute_weight(qweight, scale, group_size):
                      ).unsqueeze(0).unsqueeze(-1),
         ).bitwise_and(15)
     w = w.reshape(-1, w.shape[2]).contiguous()
+    if g_idx is not None:
+        w = w[g_idx, :]
     tile = 16
     w = w.reshape((w.shape[0] // tile, tile, w.shape[1] // tile, tile))
     w = w.permute((0, 2, 1, 3)).reshape(w.shape[0], -1)
@@ -288,13 +290,22 @@ class GPTQLinearMethod(LinearMethodBase):
             ops.gptq_shuffle(weights["qweight"], weights["g_idx"],
                              self.quant_config.weight_bits)
         elif weights["exllama_state"] == ExllamaState.MARLIN_UNINITIALIZED:
+            if self.quant_config.desc_act:
+                weights["g_idx"] = torch.argsort(weights["g_idx"]).to(
+                    torch.int)
+            else:
+                weights["g_idx"] = None
             weights["qweight"], weights["scales"] = pemute_weight(weights["qweight"],
                                                                   weights["scales"],
-                                                                  self.quant_config.group_size)
+                                                                  self.quant_config.group_size,
+                                                                  weights["g_idx"])
             weights["exllama_state"] = ExllamaState.MARLIN_READY
 
         if weights["exllama_state"] == ExllamaState.MARLIN_READY:
             output = torch.empty(out_shape, dtype=x.dtype, device=x.device)
+            # reorder input for act-order model
+            if weights["g_idx"] is not None:
+                reshaped_x = reshaped_x[:, weights["g_idx"]]
             ops.marlin_gemm(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
                             weights["scales"], self.workspace)
         else:
