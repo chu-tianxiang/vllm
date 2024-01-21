@@ -62,6 +62,9 @@ class GGUFConfig(QuantizationConfig):
     def rope_style(self) -> Optional[bool]:
         return False
 
+    def quant_vocab(self) -> Optional[bool]:
+        return True
+
 
 class GGUFLinearMethod(LinearMethodBase):
     """Linear method for GGUF.
@@ -125,3 +128,20 @@ class GGUFLinearMethod(LinearMethodBase):
         if bias is not None:
             out = out + bias
         return out.reshape(out_shape)
+
+    def apply_embedding(self, weights: Dict[str, torch.Tensor],
+                        x: torch.Tensor) -> torch.Tensor:
+        if isinstance(weights["weight_type"], torch.Tensor):
+            weights["weight_type"] = int(weights["weight_type"])
+        weight = weights["weight"]
+        weight_type = weights["weight_type"]
+        dim, block_size = GGML_QUANT_SIZES[weights["weight_type"]]
+        vocab_size = weight.shape[0]
+        hidden_size = weight.shape[1] // block_size * dim
+        if weight_type < 2:
+            return torch.embedding(weight.view(vocab_size, -1), x)
+        x_flat = x.flatten()
+        quant = torch.index_select(weight.view(vocab_size, -1), dim=0, index=x_flat)
+        dequant = ops.ggml_dequantize(quant, weight_type,
+                                      hidden_size, x_flat.shape[0])
+        return dequant.view(*x.shape, hidden_size)

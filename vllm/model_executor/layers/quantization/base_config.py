@@ -71,3 +71,6 @@ class QuantizationConfig(ABC):
     @abstractmethod
     def rope_style(self) -> Optional[bool]:
         raise NotImplementedError
+
+    def quant_vocab(self) -> Optional[bool]:
+        return False

@@ -240,6 +240,7 @@ class InternLMModel(nn.Module):
         self.embed_tokens = VocabParallelEmbedding(
             vocab_size,
             config.hidden_size,
+            linear_method=linear_method
         )
         self.layers = nn.ModuleList([
             InternLMDecoderLayer(config, linear_method)
@@ -280,7 +281,8 @@ class InternLMForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.model = InternLMModel(config, linear_method)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
+        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+                                      linear_method=linear_method)
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -299,7 +301,7 @@ class InternLMForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head.weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head(hidden_states),
                                    sampling_metadata)
         return next_tokens
 

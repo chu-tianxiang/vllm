@@ -291,7 +291,8 @@ class ChatGLMModel(nn.Module):
         super().__init__()
 
         self.embedding = VocabParallelEmbedding(config.padded_vocab_size,
-                                                config.hidden_size)
+                                                config.hidden_size,
+                                                linear_method=linear_method)
 
         self.num_layers = config.num_layers
         self.multi_query_group_num = config.multi_query_group_num
@@ -299,7 +300,8 @@ class ChatGLMModel(nn.Module):
         self.encoder = GLMTransformer(config, linear_method)
 
         self.output_layer = ParallelLMHead(config.padded_vocab_size,
-                                           config.hidden_size)
+                                           config.hidden_size,
+                                           linear_method=linear_method)
 
     def forward(
         self,
@@ -331,7 +333,7 @@ class ChatGLMForCausalLM(nn.Module):
         self.config: ChatGLMConfig = config
         self.linear_method = linear_method
         self.transformer = ChatGLMModel(config, linear_method)
-        self.lm_head_weight = self.transformer.output_layer.weight
+        # self.lm_head_weight = self.transformer.output_layer.weight
         self.sampler = Sampler(config.padded_vocab_size)
 
     def forward(
@@ -350,7 +352,7 @@ class ChatGLMForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head_weight, hidden_states,
+        next_tokens = self.sampler(self.transformer.output_layer(hidden_states),
                                    sampling_metadata)
         return next_tokens
 

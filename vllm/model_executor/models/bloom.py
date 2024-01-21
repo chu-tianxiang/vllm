@@ -32,7 +32,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
-    VocabParallelEmbedding)
+    VocabParallelEmbedding, ParallelLMHead)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
@@ -227,6 +227,7 @@ class BloomModel(nn.Module):
         self.word_embeddings = VocabParallelEmbedding(
             config.vocab_size,
             self.embed_dim,
+            linear_method=linear_method
         )
         self.word_embeddings_layernorm = nn.LayerNorm(
             self.embed_dim, eps=config.layer_norm_epsilon)
@@ -272,7 +273,9 @@ class BloomForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.transformer = BloomModel(config, linear_method)
-        self.lm_head_weight = self.transformer.word_embeddings.weight
+        # self.lm_head_weight = self.transformer.word_embeddings.weight
+        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+                                      linear_method=linear_method)
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -291,7 +294,7 @@ class BloomForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head_weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head(hidden_states),
                                    sampling_metadata)
         return next_tokens
 
@@ -308,6 +311,13 @@ class BloomForCausalLM(nn.Module):
             if not name.startswith("transformer."):
                 name = "transformer." + name
             param = params_dict[name]
+
+            if "word_embeddings.weight" in name:
+                # Copy word embedding to lm_head
+                lm_head_param = params_dict["lm_head.weight"]
+                weight_loader = getattr(lm_head_param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(lm_head_param, loaded_weight)
 
             if "query_key_value" in name:
                 # NOTE: BLOOM's fused QKV's output_dim has the shape of

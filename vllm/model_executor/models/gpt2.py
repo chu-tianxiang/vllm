@@ -32,7 +32,7 @@ from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
-    VocabParallelEmbedding)
+    VocabParallelEmbedding, ParallelLMHead)
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_world_size)
 from vllm.model_executor.sampling_metadata import SamplingMetadata
@@ -179,7 +179,8 @@ class GPT2Model(nn.Module):
         assert not config.scale_attn_by_inverse_layer_idx
         assert not config.reorder_and_upcast_attn
         self.embed_dim = config.hidden_size
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim)
+        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
+                                          linear_method=linear_method)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList([
             GPT2Block(config, linear_method)
@@ -217,7 +218,12 @@ class GPT2LMHeadModel(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.transformer = GPT2Model(config, linear_method)
-        self.lm_head_weight = self.transformer.wte.weight
+        # self.lm_head_weight = self.transformer.wte.weight
+        self.lm_head = ParallelLMHead(
+            config.vocab_size,
+            config.hidden_size,
+            linear_method=linear_method
+        )
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -236,7 +242,7 @@ class GPT2LMHeadModel(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head_weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head(hidden_states),
                                    sampling_metadata)
         return next_tokens
 
@@ -252,6 +258,12 @@ class GPT2LMHeadModel(nn.Module):
                 # GPT-2 ties the weights of the embedding layer and the final
                 # linear layer.
                 continue
+            if "wte.weight" in name:
+                # Copy word embedding to lm_head
+                lm_head_param = params_dict["lm_head.weight"]
+                weight_loader = getattr(lm_head_param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(lm_head_param, loaded_weight)
             if ".attn.bias" in name or ".attn.masked_bias" in name:
                 # Skip attention mask.
                 # NOTE: "c_attn.bias" should not be skipped.

@@ -71,6 +71,11 @@ class UnquantizedLinearMethod(LinearMethodBase):
             return F.linear(x, weight)
         return F.linear(x, weight, bias)
 
+    def apply_embedding(self, weights: Dict[str, torch.Tensor],
+                        x: torch.Tensor) -> torch.Tensor:
+        weight = weights["weight"]
+        return F.embedding(x, weight)
+
 
 class ReplicatedLinear(torch.nn.Module):
     """Replicated linear layer.

@@ -202,6 +202,7 @@ class GPTJModel(nn.Module):
         self.wte = VocabParallelEmbedding(
             config.vocab_size,
             self.embed_dim,
+            linear_method=linear_method
         )
         self.h = nn.ModuleList(
             [GPTJBlock(config, linear_method) for _ in range(config.n_layer)])
@@ -243,6 +244,7 @@ class GPTJForCausalLM(nn.Module):
             config.vocab_size,
             config.n_embd,
             bias=True,
+            linear_method=linear_method
         )
         self.sampler = Sampler(config.vocab_size)
 
@@ -262,7 +264,7 @@ class GPTJForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head.weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head(hidden_states),
                                    sampling_metadata, self.lm_head.bias)
         return next_tokens
 

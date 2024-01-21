@@ -99,7 +99,7 @@ def convert_to_state_dict(checkpoint, save_dir):
 
     # write tensor
     tensor_mapping = {
-        "token_embd": ("model.embed_tokens", dim),
+        "token_embd": ("model.embed_tokens", vocab_size),
         "output": ("lm_head", vocab_size),
         "output_norm": ("model.norm", -1),
         "blk.{bid}.attn_norm": ("model.layers.{bid}.input_layernorm", -1),
@@ -136,12 +136,7 @@ def convert_to_state_dict(checkpoint, save_dir):
         data = torch.tensor(ts.data)
         if output_dim != -1:
             data = data.view(output_dim, -1)
-        # todo: load quantized embedding directly
-        if new_key == "model.embed_tokens.weight" and weight_type > 1:
-            data = ops.ggml_dequantize(data.cuda(), weight_type, vocab_size, dim).cpu()
-        elif new_key == "lm_head.weight" and weight_type > 1:
-            data = ops.ggml_dequantize(data.cuda(), weight_type, vocab_size, dim).cpu()
-        elif weight_type > 1:
+        if weight_type > 1:
             state_dict[new_key.replace("weight", "weight_type")] = weight_type
         state_dict[new_key] = data
     torch.save(state_dict, os.path.join(save_dir, "pytorch_model.bin"))

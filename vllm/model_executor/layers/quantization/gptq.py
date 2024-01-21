@@ -159,8 +159,11 @@ class GPTQLinearMethod(LinearMethodBase):
         self.workspace = torch.zeros((512,), dtype=torch.int, device="cuda")
 
     def fit_marlin(self, output_size):
-        return self.quant_config.group_size in (-1, 128) and self.quant_config.sym and (
-            not self.quant_config.desc_act) and output_size % 256 == 0 and not is_hip()
+        return self.quant_config.group_size in (-1, 128) and (
+            self.quant_config.weight_bits == 4) and (
+            self.quant_config.sym) and (
+            not self.quant_config.desc_act) and (
+            output_size % 256 == 0) and not is_hip()
 
     def create_weights(
         self,
