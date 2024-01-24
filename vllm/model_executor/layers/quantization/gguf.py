@@ -120,7 +120,9 @@ class GGUFLinearMethod(LinearMethodBase):
 
         xshape = x.view(-1, x.shape[-1])
         if xshape.shape[0] == 1:
-            out = ops.ggml_mul_mat_vec(weight, reshaped_x, weight_type, outfeatures)
+            out = ops.ggml_mul_mat_vec_a8(weight, reshaped_x, weight_type, outfeatures)
+        elif xshape.shape[0] < 8 and weight_type < 16:
+            out = ops.ggml_mul_mat_a8(weight, reshaped_x, weight_type, outfeatures)
         else:
             weight = ops.ggml_dequantize(weight, weight_type, outfeatures, infeatures)
             out = reshaped_x @ weight.T
