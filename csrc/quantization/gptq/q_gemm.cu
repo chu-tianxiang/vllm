@@ -142,12 +142,6 @@ __global__ void gemm_half_q_half_gptq_kernel
     // Zero output
     if (n >= size_n) return;
 
-    if (blockIdx.z == 0)
-    {
-        for (int m = 0; m < m_count; m++)
-            *((uint64_t*)c_.item_ptr(offset_m + m, n)) = 0;
-    }
-
     __syncthreads();
 
     // Find initial group
@@ -489,11 +483,6 @@ __global__ void gemm_half_q_half_alt_kernel(
         );
     }
 
-    if (blockIdx.z == 0)
-    {
-        for (int m = 0; m < b_end; m++)
-            mul[(b + m) * width + w] = __int2half_rn(0);
-    }
     __syncthreads();
 
     int i = width * h + w;
@@ -837,7 +826,13 @@ torch::Tensor gptq_gemm
 {
     const at::cuda::OptionalCUDAGuard device_guard(device_of(a));
     auto options = torch::TensorOptions().dtype(a.dtype()).device(a.device());
-    at::Tensor c = torch::empty({a.size(0), b_q_weight.size(1)}, options);
+    // For split-k kernels it's necessary to initialize output to all zero
+    at::Tensor c;
+    if ((use_exllama && a.size(0) > MAX_Q_GEMM_ROWS) || (!use_exllama && a.size(0) > MAX_ALT_GEMM_ROWS)) {
+        c = torch::empty({a.size(0), b_q_weight.size(1)}, options);
+    } else {
+        c = torch::zeros({a.size(0), b_q_weight.size(1)}, options);
+    }
     at::Tensor temp_dq = torch::empty({b_q_weight.size(0) * 8, b_q_weight.size(1)}, options);
 
     vllm::gptq::gemm_half_q_half_cuda
