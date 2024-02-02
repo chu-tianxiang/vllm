@@ -8,6 +8,7 @@ from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 
+
 GGML_QUANT_SIZES = {
     0:  (1, 4),
     1:  (1, 2),
@@ -97,7 +98,7 @@ class GGUFLinearMethod(LinearMethodBase):
         set_weight_attrs(weight_type, {"ignore_warning": True})
         return {
             "weight": weight,
-            "weight_type": weight_type
+            "weight_type": weight_type,
         }
 
     def apply_weights(self,
@@ -111,8 +112,8 @@ class GGUFLinearMethod(LinearMethodBase):
             if weights["weight"].shape[1] % block_size != 0:
                 raise ValueError("Size is not aligned with the quantized weight shape.")
 
-        weight = weights["weight"]
         weight_type = weights["weight_type"]
+        weight = weights["weight"]
         infeatures = x.shape[-1]
         outfeatures = weight.shape[0]
         out_shape = (x.shape[:-1] + (weight.shape[0], ))

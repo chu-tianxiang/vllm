@@ -26,11 +26,9 @@ In addition to GPTQ 4bit quantization, this repo also adds support to other bit 
 
 * GGUF
 
-You have to convert the `gguf` to torch dict before running, checkout the `examples/convert_gguf_to_torch.py`. Only llama and mistral are supported.
+Only llama and mistral are supported.
 ```
-PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python python convert_gguf_to_torch.py --input mixtral-8x7b-instruct-v0.1.Q2_K.gguf --output mixtral-q2k
-
-python -m vllm.entrypoints.api_server --model mixtral-q2k --quantization gguf
+python -m vllm.entrypoints.api_server --model miqu-1-70b.q2_K.gguf
 ```
 
 * QUIP#
