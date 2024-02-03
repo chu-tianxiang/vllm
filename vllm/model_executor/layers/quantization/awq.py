@@ -102,7 +102,6 @@ class AWQLinearMethod(LinearMethodBase):
             torch.empty(
                 input_size_per_partition,
                 output_size_per_partition // self.quant_config.pack_factor,
-                device="cuda",
                 dtype=torch.int32,
             ),
             requires_grad=False,
@@ -118,7 +117,6 @@ class AWQLinearMethod(LinearMethodBase):
             torch.empty(
                 input_size_per_partition // self.quant_config.group_size,
                 output_size_per_partition // self.quant_config.pack_factor,
-                device="cuda",
                 dtype=torch.int32,
             ),
             requires_grad=False,
@@ -134,7 +132,6 @@ class AWQLinearMethod(LinearMethodBase):
             torch.empty(
                 input_size_per_partition // self.quant_config.group_size,
                 output_size_per_partition,
-                device="cuda",
                 dtype=params_dtype,
             ),
             requires_grad=False,
@@ -159,7 +156,16 @@ class AWQLinearMethod(LinearMethodBase):
         pack_factor = self.quant_config.pack_factor
         out_shape = (x.shape[:-1] + (qweight.shape[-1] * pack_factor, ))
         reshaped_x = x.reshape(-1, x.shape[-1])
-        out = ops.awq_gemm(reshaped_x, qweight, scales, qzeros, pack_factor)
+
+        # num_tokens >= threshold
+        FP16_MATMUL_HEURISTIC_CONDITION = x.shape[:-1].numel() >= 256
+
+        if FP16_MATMUL_HEURISTIC_CONDITION:
+            out = ops.awq_dequantize(qweight, scales, qzeros, 0, 0, 0)
+            out = torch.matmul(reshaped_x, out)
+        else:
+            out = ops.awq_gemm(reshaped_x, qweight, scales, qzeros,
+                               pack_factor)
         if bias is not None:
             out = out + bias
         return out.reshape(out_shape)

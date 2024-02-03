@@ -116,7 +116,7 @@ class StablelmAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_key_value_heads * self.head_dim
-
+        self.qkv_bias = getattr(config, "use_qkv_bias", False)
         if (self.head_dim * self.num_heads * tp_size) != self.hidden_size:
             raise ValueError(
                 f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
@@ -126,15 +126,15 @@ class StablelmAttention(nn.Module):
             self.merge_weight = False
             self.q_proj = ColumnParallelLinear(
                 self.hidden_size, self.q_size,
-                bias=False,
+                bias=self.qkv_bias,
                 linear_method=linear_method)
             self.k_proj = ColumnParallelLinear(
                 self.hidden_size, self.kv_size,
-                bias=False,
+                bias=self.qkv_bias,
                 linear_method=linear_method)
             self.v_proj = ColumnParallelLinear(
                 self.hidden_size, self.kv_size,
-                bias=False,
+                bias=self.qkv_bias,
                 linear_method=linear_method)
         else:
             self.merge_weight = True
@@ -142,8 +142,8 @@ class StablelmAttention(nn.Module):
                 self.hidden_size,
                 self.head_dim,
                 self.total_num_heads,
-                self.total_num_kv_heads,
-                bias=False,
+                self.total_num_key_value_heads,
+                self.qkv_bias,
                 linear_method=linear_method,
             )
         self.o_proj = RowParallelLinear(self.total_num_heads * self.head_dim,
