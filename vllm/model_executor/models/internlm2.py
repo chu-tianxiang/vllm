@@ -10,6 +10,7 @@ from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.attention import PagedAttention
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (LinearMethodBase,
+                                               ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
@@ -37,10 +38,22 @@ class InternLM2MLP(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            hidden_size, [intermediate_size] * 2,
-            bias=False,
-            linear_method=linear_method)
+        if linear_method is not None and not linear_method.quant_config.merge_weight():
+            self.merge_weight = False
+            self.w1 = ColumnParallelLinear(
+                hidden_size, intermediate_size,
+                bias=False,
+                linear_method=linear_method)
+            self.w3 = ColumnParallelLinear(
+                hidden_size, intermediate_size,
+                bias=False,
+                linear_method=linear_method)
+        else:
+            self.merge_weight = True
+            self.gate_up_proj = MergedColumnParallelLinear(
+                hidden_size, [intermediate_size] * 2,
+                bias=False,
+                linear_method=linear_method)
         self.w2 = RowParallelLinear(intermediate_size,
                                     hidden_size,
                                     bias=False,
@@ -51,7 +64,12 @@ class InternLM2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        if self.merge_weight:
+            gate_up, _ = self.gate_up_proj(x)
+        else:
+            up, _ = self.up_proj(x)
+            gate, _ = self.gate_proj(x)
+            gate_up = torch.cat([gate, up], dim=-1)
         x = self.act_fn(gate_up)
         x, _ = self.w2(x)
         return x
@@ -209,6 +227,7 @@ class InternLM2Model(nn.Module):
         self.tok_embeddings = VocabParallelEmbedding(
             config.vocab_size,
             config.hidden_size,
+            linear_method=linear_method,
         )
         self.layers = nn.ModuleList([
             InternLMDecoderLayer(config, linear_method)
@@ -249,7 +268,11 @@ class InternLM2ForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.model = InternLM2Model(config, linear_method)
-        self.output = ParallelLMHead(config.vocab_size, config.hidden_size)
+        self.output = ParallelLMHead(
+            config.vocab_size,
+            config.hidden_size,
+            linear_method=linear_method,
+        )
         self.sampler = Sampler(config.vocab_size)
 
     def forward(
@@ -268,7 +291,7 @@ class InternLM2ForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.output.weight, hidden_states,
+        next_tokens = self.sampler(self.output(hidden_states),
                                    sampling_metadata)
         return next_tokens
 
@@ -282,6 +305,8 @@ class InternLM2ForCausalLM(nn.Module):
             ("gate_up_proj", "w1", 0),
             ("gate_up_proj", "w3", 1),
         ]
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+            stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
                 model_name_or_path, cache_dir, load_format, revision):

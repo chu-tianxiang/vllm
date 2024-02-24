@@ -23,6 +23,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &silu_and_mul,
     "Activation function used in SwiGLU.");
   ops.def(
+    "gelu_and_mul",
+    &gelu_and_mul,
+    "Activation function used in GeGLU.");
+  ops.def(
     "gelu_new",
     &gelu_new,
     "GELU implementation used in GPT-2.");
@@ -48,8 +52,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &rotary_embedding,
     "Apply GPT-NeoX or GPT-J style rotary embedding to query and key");
 
-#ifndef USE_ROCM
   // Quantization ops
+#ifndef USE_ROCM
   ops.def("awq_gemm", &awq_gemm, "Quantized GEMM for AWQ");
   ops.def("quip_decompress", &decompress_e8p_origorder, "decompress_packed_e8p");
   ops.def("quip_gemv", &e8p_mm_origorder, "e8p_mm_origorder");
