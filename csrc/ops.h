@@ -82,7 +82,17 @@ void marlin_gemm(
   const torch::Tensor& weights,
         torch::Tensor& output,
   const torch::Tensor& scales,
+  const torch::Tensor& zeros,
         torch::Tensor& workspace);
+
+torch::Tensor awq_to_marlin(
+    torch::Tensor W
+);
+
+torch::Tensor gptq_to_marlin(
+    torch::Tensor W,
+    torch::Tensor g_idx
+);
 
 at::Tensor e8p_mm_origorder(
     const at::Tensor& A,

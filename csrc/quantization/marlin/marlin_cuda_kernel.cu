@@ -138,9 +138,9 @@ __device__ inline FragB dequant(int q) {
   int lo = lop3<(0xf0 & 0xcc) | 0xaa>(q, LO, EX);
   int hi = lop3<(0xf0 & 0xcc) | 0xaa>(q, HI, EX);
   // We want signed int4 outputs, hence we fuse the `-8` symmetric zero point directly into `SUB` and `ADD`.
-  const int SUB = 0x64086408;
+  const int SUB = 0x64006400;
   const int MUL = 0x2c002c00;
-  const int ADD = 0xd480d480;
+  const int ADD = 0xd400d400;
   FragB frag_b;
   frag_b[0] = __hsub2(
     *reinterpret_cast<half2*>(&lo),
@@ -154,10 +154,11 @@ __device__ inline FragB dequant(int q) {
 }
 
 // Multiply dequantized values by the corresponding quantization scale; used only for grouped quantization.
-__device__ inline void scale(FragB& frag_b, FragS& frag_s, int i) {
+__device__ inline void scale(FragB& frag_b, FragS& frag_s, FragS& frag_z, int i) {
   half2 s = __half2half2(reinterpret_cast<__half*>(&frag_s)[i]);
-  frag_b[0] = __hmul2(frag_b[0], s);
-  frag_b[1] = __hmul2(frag_b[1], s);
+  half2 z = __half2half2(reinterpret_cast<__half*>(&frag_z)[i]);
+  frag_b[0] = __hfma2(frag_b[0], s, z);
+  frag_b[1] = __hfma2(frag_b[1], s, z);
 }
 
 // Wait until barrier reaches `count`, then lock for current threadblock.
@@ -200,6 +201,7 @@ __global__ void Marlin(
   const int4* __restrict__ B, // 4bit quantized weight matrix of shape kxn
         int4* __restrict__ C, // fp16 output buffer of shape mxn
   const int4* __restrict__ s, // fp16 quantization scales of shape (k/groupsize)xn
+  const int4* __restrict__ z, // fp16 quantization zeros of shape (k/groupsize)xn
   int  prob_m, // batch dimension m
   int  prob_n, // output dimension n
   int  prob_k, // reduction dimension k
@@ -349,11 +351,13 @@ __global__ void Marlin(
   int4* sh_a = sh;
   int4* sh_b = sh_a + (stages * a_sh_stage);
   int4* sh_s = sh_b + (stages * b_sh_stage);
+  int4* sh_z = sh_s + (stages * s_sh_stage);
   // Register storage for double buffer of shared memory reads.
   FragA frag_a[2][thread_m_blocks];
   I4 frag_b_quant[2];
   FragC frag_c[thread_m_blocks][4][2];
   FragS frag_s[2][4];
+  FragS frag_z[2][4];
 
   // Zero accumulators.
   auto zero_accums = [&] () {
@@ -383,8 +387,11 @@ __global__ void Marlin(
       // Only fetch scales if this tile starts a new group
       if (group_blocks != -1 && pipe % (group_blocks / thread_k_blocks) == 0) {
         int4* sh_s_stage = sh_s + s_sh_stage * pipe;
-        if (s_sh_wr_pred)
+        int4* sh_z_stage = sh_z + s_sh_stage * pipe;
+        if (s_sh_wr_pred) {
           cp_async4_stream(&sh_s_stage[s_sh_wr], &s[s_gl_rd]);
+          cp_async4_stream(&sh_z_stage[s_sh_wr], &z[s_gl_rd]);
+        }
         s_gl_rd += s_gl_rd_delta;
       }
     }
@@ -407,7 +414,9 @@ __global__ void Marlin(
     // compiler and correspondingly a noticable drop in performance.
     if (group_blocks != -1) {
       int4* sh_s_stage = sh_s + s_sh_stage * ((group_blocks / thread_k_blocks) * (pipe / (group_blocks / thread_k_blocks)));
+      int4* sh_z_stage = sh_z + s_sh_stage * ((group_blocks / thread_k_blocks) * (pipe / (group_blocks / thread_k_blocks)));
       reinterpret_cast<int4*>(&frag_s[k % 2])[0] = sh_s_stage[s_sh_rd];
+      reinterpret_cast<int4*>(&frag_z[k % 2])[0] = sh_z_stage[s_sh_rd];
     }
     int4* sh_a_stage = sh_a + a_sh_stage * pipe;
     #pragma unroll
@@ -427,10 +436,10 @@ __global__ void Marlin(
       FragB frag_b0 = dequant(b_quant);
       // If there are no groups, we can just scale the final output once and can avoid doing so for each weight.
       if (group_blocks != -1)
-        scale(frag_b0, frag_s[k % 2][j], 0);
+        scale(frag_b0, frag_s[k % 2][j], frag_z[k % 2][j], 0);
       FragB frag_b1 = dequant(b_quant_shift);
       if (group_blocks != -1)
-        scale(frag_b1, frag_s[k % 2][j], 1);
+        scale(frag_b1, frag_s[k % 2][j], frag_z[k % 2][j], 1);
       #pragma unroll
       for (int i = 0; i < thread_m_blocks; i++) {
         mma(frag_a[k % 2][i], frag_b0, frag_c[i][j][0]);
@@ -564,10 +573,10 @@ __global__ void Marlin(
     int c_gl_wr_end = c_gl_stride * prob_m;
 
     // We first reorder in shared memory to guarantee the most efficient final global write patterns
-    auto write = [&] (int idx, float c0, float c1, FragS& s) {
+    auto write = [&] (int idx, float c0, float c1, FragS& s, FragS& z) {
       half2 res = __halves2half2(__float2half(c0), __float2half(c1));
       if (group_blocks == -1) // for per-column quantization we finally apply the scale here
-        res = __hmul2(res, s[0]);
+        res = __hfma2(res, s[0], z[0]);
       ((half2*) sh)[idx] = res;
     };
     if (threadIdx.x / 32 < thread_n_blocks / 4) {
@@ -576,10 +585,10 @@ __global__ void Marlin(
         #pragma unroll
         for (int j = 0; j < 4; j++) {
           int wr = c_sh_wr + 8 * j;
-          write(wr + (4 * c_sh_stride) * 0 + 0, frag_c[i][j][0][0], frag_c[i][j][0][1], frag_s[j / 2][2 * (j % 2) + 0]);
-          write(wr + (4 * c_sh_stride) * 8 + 0, frag_c[i][j][0][2], frag_c[i][j][0][3], frag_s[j / 2][2 * (j % 2) + 0]);
-          write(wr + (4 * c_sh_stride) * 0 + 4, frag_c[i][j][1][0], frag_c[i][j][1][1], frag_s[j / 2][2 * (j % 2) + 1]);
-          write(wr + (4 * c_sh_stride) * 8 + 4, frag_c[i][j][1][2], frag_c[i][j][1][3], frag_s[j / 2][2 * (j % 2) + 1]);
+          write(wr + (4 * c_sh_stride) * 0 + 0, frag_c[i][j][0][0], frag_c[i][j][0][1], frag_s[j / 2][2 * (j % 2) + 0], frag_z[j / 2][2 * (j % 2) + 0]);
+          write(wr + (4 * c_sh_stride) * 8 + 0, frag_c[i][j][0][2], frag_c[i][j][0][3], frag_s[j / 2][2 * (j % 2) + 0], frag_z[j / 2][2 * (j % 2) + 0]);
+          write(wr + (4 * c_sh_stride) * 0 + 4, frag_c[i][j][1][0], frag_c[i][j][1][1], frag_s[j / 2][2 * (j % 2) + 1], frag_z[j / 2][2 * (j % 2) + 1]);
+          write(wr + (4 * c_sh_stride) * 8 + 4, frag_c[i][j][1][2], frag_c[i][j][1][3], frag_s[j / 2][2 * (j % 2) + 1], frag_z[j / 2][2 * (j % 2) + 1]);
         }
         c_sh_wr += 16 * (4 * c_sh_stride);
       }
@@ -637,8 +646,10 @@ __global__ void Marlin(
       bool last = slice_idx == slice_count - 1;
       // For per-column scales, we only fetch them here in the final step before write-out
       if (group_blocks == -1 && last) {
-        if (s_sh_wr_pred)
+        if (s_sh_wr_pred) {
           cp_async4_stream(&sh_s[s_sh_wr], &s[s_gl_rd]);
+          cp_async4_stream(&sh_z[s_sh_wr], &z[s_gl_rd]);
+        }
         cp_async_fence();
       }
       thread_block_reduce();
@@ -648,6 +659,8 @@ __global__ void Marlin(
         if (threadIdx.x / 32 < thread_n_blocks / 4) {
           reinterpret_cast<int4*>(&frag_s)[0] = sh_s[s_sh_rd + 0];
           reinterpret_cast<int4*>(&frag_s)[1] = sh_s[s_sh_rd + 4];
+          reinterpret_cast<int4*>(&frag_z)[0] = sh_z[s_sh_rd + 0];
+          reinterpret_cast<int4*>(&frag_z)[1] = sh_z[s_sh_rd + 4];
         }
       }
       if (slice_count > 1) { // only globally reduce if there is more than one block in a slice
@@ -690,7 +703,7 @@ const int SHARED_MEM = 96 * 1024; // max shared memory on compute capability 8.6
       SHARED_MEM \
     ); \
     Marlin<THREADS, THREAD_M_BLOCKS, THREAD_N_BLOCKS, THREAD_K_BLOCKS, STAGES, GROUP_BLOCKS><<<blocks, THREADS, SHARED_MEM, stream>>>( \
-      A_ptr, B_ptr, C_ptr, s_ptr, \
+      A_ptr, B_ptr, C_ptr, s_ptr, z_ptr,\
       prob_m, prob_n, prob_k, \
       locks \
     ); \
@@ -704,6 +717,7 @@ int marlin_cuda(
   const void* B,
         void* C,
         void* s,
+        void* z,
   int prob_m,
   int prob_n,
   int prob_k,
@@ -745,6 +759,7 @@ int marlin_cuda(
   const int4* B_ptr = (const int4*) B;
   int4* C_ptr = (int4*) C;
   const int4* s_ptr = (const int4*) s;
+  const int4* z_ptr = (const int4*) z;
 
   int cols = prob_n / thread_n;
   int* locks = (int*) workspace;
@@ -800,6 +815,7 @@ void marlin_gemm(
   const torch::Tensor& weights,
         torch::Tensor& output,
   const torch::Tensor& scales,
+  const torch::Tensor& zeros,
         torch::Tensor& workspace
 ) {
   // thread_k: `k` size of a thread_tile in `weights` (can usually be left as auto -1)
@@ -821,6 +837,7 @@ void marlin_gemm(
     weights.data_ptr(),
     output.data_ptr(),
     scales.data_ptr(),
+    zeros.data_ptr(),
     prob_m, prob_n, prob_k,
     workspace.data_ptr(),
     groupsize,
@@ -840,4 +857,176 @@ void marlin_gemm(
       "No kernel implementation for thread_k=", thread_k, ", thread_n=", thread_n, ", groupsize=", groupsize, "."
     );
   }
+}
+
+
+__global__ void gptq_to_marlin(
+  uint32_t* in,
+  uint32_t* out,
+  int* g_idx,
+  int m,
+  int n
+) {
+  uint32_t col = blockIdx.y * 64;
+  uint32_t t = threadIdx.x;
+
+  // marlin packs 4 16x16 blocks one time;
+  const int pad_len = 18;
+  __shared__ uint8_t block[4][16][pad_len];
+
+  // unpack
+  #pragma unroll
+  for (int i = 0; i < 16; i += 1) {
+    uint32_t source_row = g_idx? g_idx[blockIdx.x * 16 + i] : (blockIdx.x * 16 + i);
+    int in_row = source_row >> 3;
+    int in_subrow = source_row & 0x07;
+    int in_row_shift = in_subrow << 2;
+    for (int offset = t; offset < 64; offset += 32) {
+      //printf("in_row: %d, n: %d, col: %d, offset: %d\n", in_row, n, col, offset);
+      uint32_t v = in[in_row * n + col + offset];
+      block[offset / 16][i][offset % 16] = (v >> in_row_shift) & 0xf;
+    }
+  }
+
+  // repack
+  // ref: _get_perms @ https://github.com/IST-DASLab/marlin/blob/master/marlin/__init__.py
+  uint32_t srow = (t % 4) * 2;
+  uint32_t scol = t / 4;
+
+  uint32_t idx[8][2];
+  idx[0][0] = srow;     idx[0][1] = scol;
+  idx[1][0] = srow + 8; idx[1][1] = scol;
+  idx[2][0] = srow;     idx[2][1] = scol + 8;
+  idx[3][0] = srow + 8; idx[3][1] = scol + 8;
+
+  idx[4][0] = srow + 1; idx[4][1] = scol;
+  idx[5][0] = srow + 9; idx[5][1] = scol;
+  idx[6][0] = srow + 1; idx[6][1] = scol + 8;
+  idx[7][0] = srow + 9; idx[7][1] = scol + 8;
+
+#pragma unroll
+  for (int i = 0; i < 4; i += 1) {
+    uint32_t v[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      v[j] = block[i][idx[j][0]][idx[j][1]];
+    }
+
+    uint32_t pack = (v[7] << 28) | (v[6] << 24) | (v[5] << 20) | (v[4] << 16) |
+        (v[3] << 12) | (v[2] << 8) | (v[1] << 4) | v[0];
+
+    out[blockIdx.x * n * 2 + blockIdx.y * 128 + t * 4 + i] = pack;
+  }
+}
+
+
+torch::Tensor gptq_to_marlin(
+    torch::Tensor W,
+    torch::Tensor g_idx
+){
+  int m = W.sizes()[0];
+  int n = W.sizes()[1];
+
+  assert(W.is_contiguous());
+  assert(W.dtype() == at::kInt);
+  assert(m % 2 == 0);
+  assert(n % 64 == 0);
+  auto result = at::empty(
+      {m / 2, n * 2}, at::TensorOptions().dtype(at::kInt).device(W.device()));
+
+  const dim3 threads(32);
+  // marlin packs 16 x 64 block and gptq packs 8 x 1
+  const dim3 blocks(m / 2, n / 64);
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  gptq_to_marlin<<<blocks, threads, 0, stream>>>(
+    (uint32_t*)W.data_ptr(),
+    (uint32_t*)result.data_ptr(),
+    g_idx.device().is_meta() ? NULL : (int*)g_idx.data_ptr(),
+    m,
+    n
+  );
+  return result;
+}
+
+__global__ void awq_to_marlin(
+  uint32_t* in,
+  uint32_t* out,
+  int m,
+  int n
+) {
+  uint32_t row = blockIdx.x * 16;
+  uint32_t col = blockIdx.y * 8;
+  uint32_t t = threadIdx.x;
+
+  // marlin packs 4 16x16 blocks one time;
+  const int pad_len = 18;
+  __shared__ uint8_t block[4][16][pad_len];
+
+  // unpack
+  int row_offset = t / 8;
+  int col_offset = t % 8;
+  int order_map[8] = {0, 2, 4, 6, 1, 3, 5, 7};
+  for (int offset = row_offset; offset < 16; offset += 4) {
+    uint32_t v = in[(row + offset) * n + col + col_offset];
+#pragma unroll
+    for (int i = 0; i < 8; i += 1) {
+      block[col_offset / 2][offset][8 * (col_offset % 2) + order_map[i]] = v & 0xf;
+      v >>= 4;
+    }
+  }
+
+  // repack
+  // ref: _get_perms @ https://github.com/IST-DASLab/marlin/blob/master/marlin/__init__.py
+  uint32_t srow = (t % 4) * 2;
+  uint32_t scol = t / 4;
+
+  uint32_t idx[8][2];
+  idx[0][0] = srow;     idx[0][1] = scol;
+  idx[1][0] = srow + 8; idx[1][1] = scol;
+  idx[2][0] = srow;     idx[2][1] = scol + 8;
+  idx[3][0] = srow + 8; idx[3][1] = scol + 8;
+
+  idx[4][0] = srow + 1; idx[4][1] = scol;
+  idx[5][0] = srow + 9; idx[5][1] = scol;
+  idx[6][0] = srow + 1; idx[6][1] = scol + 8;
+  idx[7][0] = srow + 9; idx[7][1] = scol + 8;
+
+#pragma unroll
+  for (int i = 0; i < 4; i += 1) {
+    uint32_t v[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      v[j] = block[i][idx[j][0]][idx[j][1]];
+    }
+
+    uint32_t pack = (v[7] << 28) | (v[6] << 24) | (v[5] << 20) | (v[4] << 16) |
+        (v[3] << 12) | (v[2] << 8) | (v[1] << 4) | v[0];
+
+    out[blockIdx.x * n * 16 + blockIdx.y * 128 + t * 4 + i] = pack;
+  }
+}
+
+
+torch::Tensor awq_to_marlin(
+    torch::Tensor W
+){
+  int m = W.sizes()[0];
+  int n = W.sizes()[1];
+
+  assert(W.dtype() == at::kInt);
+  assert(m % 16 == 0);
+  auto result = at::empty(
+      {m / 16, n * 16}, at::TensorOptions().dtype(at::kInt).device(W.device()));
+
+  const dim3 threads(32);
+  // marlin packs 16 x 64 block and awq packs 1 x 8
+  const dim3 blocks(m / 16, n / 8);
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  awq_to_marlin<<<blocks, threads, 0, stream>>>(
+    (uint32_t*)W.data_ptr(),
+    (uint32_t*)result.data_ptr(),
+    m,
+    n
+  );
+  return result;
 }

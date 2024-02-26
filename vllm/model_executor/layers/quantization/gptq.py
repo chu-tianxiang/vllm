@@ -3,7 +3,6 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from fractions import Fraction
 
-import numpy as np
 import torch
 from torch.nn.parameter import Parameter
 
@@ -14,63 +13,21 @@ from vllm.model_executor.layers.linear import (LinearMethodBase,
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 
-def _get_perms():
-    perm = []
-    for i in range(32):
-        perm1 = []
-        col = i // 4
-        for block in [0, 1]:
-            for row in [
-                2 * (i % 4),
-                2 * (i % 4) + 1,
-                2 * (i % 4 + 4),
-                2 * (i % 4 + 4) + 1
-            ]:
-                perm1.append(16 * row + col + 8 * block)
-        for j in range(4):
-            perm.extend([p + 256 * j for p in perm1])
 
-    perm = np.array(perm)
-    interleave = np.array([0, 2, 4, 6, 1, 3, 5, 7])
-    perm = perm.reshape((-1, 8))[:, interleave].ravel()
-    perm = torch.from_numpy(perm)
-    scale_perm = []
-    for i in range(8):
-        scale_perm.extend([i + 8 * j for j in range(8)])
-    scale_perm_single = []
-    for i in range(4):
-        scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
-    return perm, scale_perm, scale_perm_single
-
-_perm, _scale_perm, _scale_perm_single = _get_perms()
-
-def pemute_weight(qweight, scale, group_size, g_idx=None):
-    # unpack and permute qweight
-    w = torch.bitwise_right_shift(
-        torch.unsqueeze(qweight, 1).expand(-1, 8, -1),
-        torch.tensor(list(range(0, 32, 4)), dtype=torch.int32, device=qweight.device
-                     ).unsqueeze(0).unsqueeze(-1),
-        ).bitwise_and(15)
-    w = w.reshape(-1, w.shape[2]).contiguous()
-    if g_idx is not None:
-        w = w[g_idx, :]
-    tile = 16
-    w = w.reshape((w.shape[0] // tile, tile, w.shape[1] // tile, tile))
-    w = w.permute((0, 2, 1, 3)).reshape(w.shape[0], -1)
-    res = w.reshape((-1, _perm.numel()))[:, _perm].reshape(w.shape)
-    q = np.zeros((res.shape[0], res.shape[1] // 8), dtype=np.uint32)
-    res = res.cpu().numpy().astype(np.uint32)
-    for i in range(8):
-        q |= res[:, i::8] << 4 * i
-    q = torch.from_numpy(q.astype(np.int32)).to(w.device)
-    # permute scale
+def pemute_weight(scale, qzeros):
+    scale_perm = [i + 8 * j for i in range(8) for j in range(8)]
     dim = scale.shape[1]
-    if group_size == -1:
-        scale= scale.reshape((-1, len(_scale_perm_single)))[:, _scale_perm_single]
-    else:
-        scale = scale.reshape((-1, len(_scale_perm)))[:, _scale_perm]
+    # unpack and permute qweight
+    zeros = torch.bitwise_right_shift(
+        torch.unsqueeze(qzeros, -1),
+        torch.tensor(list(range(0, 32, 4)), dtype=torch.int32, device=qzeros.device),
+        ).bitwise_and(15) + 1
+    zeros = zeros.view(zeros.shape[0], -1)
+    scale = scale.reshape((-1, len(scale_perm)))[:, scale_perm]
+    zeros = zeros.reshape((-1, len(scale_perm)))[:, scale_perm]
     scale = scale.reshape((-1, dim)).contiguous()
-    return q, scale
+    zeros = zeros.reshape((-1, dim)).contiguous()
+    return scale, - zeros * scale
 
 
 class GPTQConfig(QuantizationConfig):
@@ -161,10 +118,9 @@ class GPTQLinearMethod(LinearMethodBase):
         self.workspace = torch.zeros((512,), dtype=torch.int, device="cuda")
 
     def fit_marlin(self, output_size):
-        return self.quant_config.group_size in (-1, 128) and (
+        # Need fix for group_size = -1
+        return self.quant_config.group_size == 128 and (
             self.quant_config.weight_bits == 4) and (
-            self.quant_config.sym) and (
-            not self.quant_config.desc_act) and (
             output_size % 256 == 0) and not is_hip()
 
     def create_weights(
@@ -276,34 +232,29 @@ class GPTQLinearMethod(LinearMethodBase):
         reshaped_x = x.reshape(-1, x.shape[-1])
         # exllama needs to shuffle the weight after the weight is loaded
         # here we do the shuffle on first forward pass
-        if weights["exllama_state"] == ExllamaState.UNINITIALIZED:
+        if weights["exllama_state"] in (ExllamaState.UNINITIALIZED, ExllamaState.MARLIN_UNINITIALIZED):
             if self.quant_config.desc_act:
                 weights["g_idx"] = torch.argsort(weights["g_idx"]).to(
                     torch.int)
             else:
                 weights["g_idx"] = torch.empty((1, 1), device="meta")
-            weights["exllama_state"] = ExllamaState.READY
-            ops.gptq_shuffle(weights["qweight"], weights["g_idx"],
-                             self.quant_config.weight_bits)
-        elif weights["exllama_state"] == ExllamaState.MARLIN_UNINITIALIZED:
-            if self.quant_config.desc_act:
-                weights["g_idx"] = torch.argsort(weights["g_idx"]).to(
-                    torch.int)
+            if weights["exllama_state"] == ExllamaState.UNINITIALIZED:
+                weights["exllama_state"] = ExllamaState.READY
+                ops.gptq_shuffle(weights["qweight"], weights["g_idx"],
+                                 self.quant_config.weight_bits)
             else:
-                weights["g_idx"] = None
-            weights["qweight"], weights["scales"] = pemute_weight(weights["qweight"],
-                                                                  weights["scales"],
-                                                                  self.quant_config.group_size,
-                                                                  weights["g_idx"])
-            weights["exllama_state"] = ExllamaState.MARLIN_READY
+                weights["exllama_state"] = ExllamaState.MARLIN_READY
+                weights["qweight"] = ops.gptq_to_marlin(weights["qweight"], weights["g_idx"])
+                weights["scales"], weights["qzeros"] = pemute_weight(
+                    weights["scales"], weights["qzeros"])
 
         if weights["exllama_state"] == ExllamaState.MARLIN_READY:
             output = torch.empty(out_shape, dtype=x.dtype, device=x.device)
             # reorder input for act-order model
-            if weights["g_idx"] is not None:
+            if weights["g_idx"].device != torch.device("meta"):
                 reshaped_x = reshaped_x[:, weights["g_idx"]]
             ops.marlin_gemm(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
-                            weights["scales"], self.workspace)
+                            weights["scales"], weights["qzeros"], self.workspace)
         else:
             output = ops.gptq_gemm(reshaped_x, weights["qweight"],
                                    weights["qzeros"], weights["scales"],
