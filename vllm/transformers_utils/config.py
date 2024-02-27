@@ -7,10 +7,8 @@ from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 from vllm.transformers_utils.configs import *
 
 _CONFIG_REGISTRY = {
-    "baichuan": BaiChuanConfig,
     "chatglm": ChatGLMConfig,
     "mpt": MPTConfig,
-    "qwen": QWenConfig,
     "RefinedWeb": RWConfig,  # For tiiuae/falcon-40b(-instruct)
     "RefinedWebModel": RWConfig,  # For tiiuae/falcon-7b(-instruct)
 }
