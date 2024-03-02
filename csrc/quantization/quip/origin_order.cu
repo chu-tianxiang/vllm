@@ -304,6 +304,9 @@ __launch_bounds__(256) void tinygemm_m16n8k16_chunk_kernel(
     int32_t mTiles,
     int32_t nTiles,
     int32_t kTiles) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
+  assert(false);
+#else
   __shared__ uint64_t CB_[256];
   if (BLayout::use_codebook) {
     CB_[threadIdx.x + threadIdx.y * 32] = CB[threadIdx.x + threadIdx.y * 32];
@@ -444,6 +447,7 @@ __launch_bounds__(256) void tinygemm_m16n8k16_chunk_kernel(
         laneId,
         sum_f32);
   }
+#endif
 }
 
 at::Tensor d4_mm_origorder(

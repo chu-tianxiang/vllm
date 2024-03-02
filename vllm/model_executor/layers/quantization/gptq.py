@@ -119,7 +119,8 @@ class GPTQLinearMethod(LinearMethodBase):
 
     def fit_marlin(self, output_size):
         # Need fix for group_size = -1
-        return self.quant_config.group_size == 128 and (
+        compute_capability = torch.cuda.get_device_capability()
+        return compute_capability[0] >= 8 and self.quant_config.group_size == 128 and (
             self.quant_config.weight_bits == 4) and (
             output_size % 256 == 0) and not is_hip()
 

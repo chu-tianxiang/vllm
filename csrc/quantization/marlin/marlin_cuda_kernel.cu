@@ -27,6 +27,17 @@
 namespace vllm {
 namespace marlin {
 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
+  void marlin_gemm(
+  const torch::Tensor& input,
+  const torch::Tensor& weights,
+        torch::Tensor& output,
+  const torch::Tensor& scales,
+  const torch::Tensor& zeros,
+        torch::Tensor& workspace
+) {}
+#else
+
 constexpr int ceildiv(int a, int b) {
   return (a + b - 1) / b;
 }
@@ -918,6 +929,7 @@ __global__ void gptq_to_marlin(
     out[blockIdx.x * n * 2 + blockIdx.y * 128 + t * 4 + i] = pack;
   }
 }
+#endif
 
 
 torch::Tensor gptq_to_marlin(

@@ -16,17 +16,13 @@ Easy, fast, and cheap LLM serving for everyone
 
 ---
 
-4-bit GPTQ support has been merged into vLLM, please use the official vLLM build instead.
+GPTQ support has been merged into vLLM, please use the official vLLM build instead.
 
 This repo currently supports a varities of other quantization methods including:
 
-* GPTQ 2/3/8-bit
-
-In addition to GPTQ 4bit quantization, this repo also adds support to other bit of GPTQ models.
-
 * GGUF
 
-Only llama and mistral are supported.
+Only llama, mixtral and qwen1.5 are supported for now.
 ```
 python -m vllm.entrypoints.api_server --model miqu-1-70b.q2_K.gguf
 ```

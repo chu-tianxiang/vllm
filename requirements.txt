@@ -11,7 +11,6 @@ uvicorn[standard]
 pydantic >= 2.0  # Required for OpenAI server.
 aioprometheus[starlette]
 fast-hadamard-transform
-gguf
 prometheus_client
 pynvml == 11.5.0
 triton >= 2.1.0
