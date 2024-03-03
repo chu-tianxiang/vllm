@@ -70,9 +70,6 @@ class QuipConfig(QuantizationConfig):
     def merge_weight(self) -> bool:
         return False
 
-    def rope_style(self) -> Optional[bool]:
-        return None
-
 
 class QuipLinearMethod(LinearMethodBase):
     """Linear method for Quip.

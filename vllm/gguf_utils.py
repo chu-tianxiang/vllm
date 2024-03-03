@@ -426,7 +426,10 @@ def convert_gguf_to_state_dict(checkpoint, config):
         raise RuntimeError(f"Cannot find any model weights with `{checkpoint}`")
 
     result = GGUFReader(checkpoint)
+    architecture = result.fields['general.architecture']
+    architecture = str(bytes(architecture.parts[architecture.data[0]]), encoding = 'utf-8')
     # write tensor
+    head_dim = config.hidden_size // config.num_attention_heads
     kv_dim = config.hidden_size // config.num_attention_heads * config.num_key_value_heads
     tensor_mapping = {
         "token_embd": ("model.embed_tokens", config.vocab_size),
@@ -470,6 +473,12 @@ def convert_gguf_to_state_dict(checkpoint, config):
         if "weight" in ts.name:
             if output_dim != -1:
                 data = data.view(output_dim, -1)
+            if architecture in ["llama", "internlm2"] and any(
+                    k in ts.name for k in ["attn_q", "attn_k"]):
+                # change rope style
+                data = data.view(output_dim // head_dim, head_dim // 2, 2,-1).permute(
+                    0, 2, 1, 3).reshape(output_dim, -1)
+
             if weight_type > 1:
                 state_dict[new_key.replace("weight", "weight_type")] = weight_type
         state_dict[new_key] = data
