@@ -258,12 +258,14 @@ class GPT2LMHeadModel(nn.Module):
                 # GPT-2 ties the weights of the embedding layer and the final
                 # linear layer.
                 continue
-            if "wte.weight" in name:
+            if "wte" in name:
                 # Copy word embedding to lm_head
-                lm_head_param = params_dict["lm_head.weight"]
-                weight_loader = getattr(lm_head_param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(lm_head_param, loaded_weight)
+                head_name = name.replace("wte", "lm_head")
+                if head_name in params_dict:
+                    lm_head_param = params_dict[head_name]
+                    weight_loader = getattr(lm_head_param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(lm_head_param, loaded_weight)
             if ".attn.bias" in name or ".attn.masked_bias" in name:
                 # Skip attention mask.
                 # NOTE: "c_attn.bias" should not be skipped.

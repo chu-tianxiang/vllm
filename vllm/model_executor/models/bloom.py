@@ -312,12 +312,14 @@ class BloomForCausalLM(nn.Module):
                 name = "transformer." + name
             param = params_dict[name]
 
-            if "word_embeddings.weight" in name:
+            if "word_embeddings" in name:
                 # Copy word embedding to lm_head
-                lm_head_param = params_dict["lm_head.weight"]
-                weight_loader = getattr(lm_head_param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(lm_head_param, loaded_weight)
+                head_name = name.replace("word_embeddings", "lm_head")
+                if head_name in params_dict:
+                    lm_head_param = params_dict[head_name]
+                    weight_loader = getattr(lm_head_param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(lm_head_param, loaded_weight)
 
             if "query_key_value" in name:
                 # NOTE: BLOOM's fused QKV's output_dim has the shape of

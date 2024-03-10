@@ -89,7 +89,7 @@ def convert_bin_to_safetensor_file(
 def get_quant_config(model_config: ModelConfig) -> QuantizationConfig:
     quant_cls = get_quantization_config(model_config.quantization)
     # No need for extra config
-    if model_config.quantization == "gguf":
+    if model_config.quantization in ["exl2", "gguf"]:
         return quant_cls()
     # Read the quantization config from the HF model config, if available.
     hf_quant_config = getattr(model_config.hf_config, "quantization_config",

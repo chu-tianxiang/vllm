@@ -336,6 +336,8 @@ vllm_extension_sources = [
     "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
     "csrc/quantization/gguf/gguf_kernel.cu",
     "csrc/quantization/gptq/q_gemm.cu",
+    "csrc/quantization/exl2/q_matrix.cu",
+    "csrc/quantization/exl2/q_gemm_exl2.cu",
     "csrc/cuda_utils_kernels.cu",
     "csrc/moe_align_block_size_kernels.cu",
     "csrc/pybind.cpp",

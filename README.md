@@ -22,14 +22,22 @@ This repo currently supports a varities of other quantization methods including:
 
 * GGUF
 
-Only llama, mixtral and qwen1.5 are supported for now.
+Llama (including mistral, yi), mixtral and qwen1.5 are supported for now.
 ```
 python -m vllm.entrypoints.api_server --model miqu-1-70b.q2_K.gguf
 ```
 
+* EXL2
+
+Only support `tensor_parallel_size=1`.
+```
+python -m vllm.entrypoints.api_server --model LoneStriker/Qwen1.5-14B-Chat-3.0bpw-h6-exl2 --quantization exl2 --dtype half
+```
+
 * QUIP#
 
-Only support 2-bit models quantized using [QuIP-for-all](https://github.com/chu-tianxiang/QuIP-for-all).
+SOTA 2-bit models quantized using [QuIP-for-all](https://github.com/chu-tianxiang/QuIP-for-all). Only support `tensor_parallel_size=1`.
+
 
 ---
 

@@ -45,7 +45,7 @@ class ModelConfig:
             a tag name, or a commit id. If unspecified, will use the default
             version.
         code_revision: The specific revision to use for the model code on
-            Hugging Face Hub. It can be a branch name, a tag name, or a 
+            Hugging Face Hub. It can be a branch name, a tag name, or a
             commit id. If unspecified, will use the default version.
         tokenizer_revision: The specific tokenizer version to use. It can be a
             branch name, a tag name, or a commit id. If unspecified, will use
@@ -155,7 +155,7 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _verify_quantization(self) -> None:
-        supported_quantization = ["awq", "gguf", "gptq", "quip", "squeezellm"]
+        supported_quantization = ["awq", "exl2", "gguf", "gptq", "quip", "squeezellm"]
         rocm_not_supported_quantization = ["awq", "quip"]
         if self.quantization is not None:
             self.quantization = self.quantization.lower()

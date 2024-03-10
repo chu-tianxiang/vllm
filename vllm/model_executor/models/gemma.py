@@ -342,13 +342,15 @@ class GemmaForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, load_format, revision, self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
-            if "embed_tokens.weight" in name:
+            if "embed_tokens" in name:
                 # Copy word embedding to lm_head
-                loaded_params.add("lm_head.weight")
-                lm_head_param = params_dict["lm_head.weight"]
-                weight_loader = getattr(lm_head_param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(lm_head_param, loaded_weight)
+                head_name = name.replace("embed_tokens", "lm_head")
+                if head_name in params_dict:
+                    loaded_params.add(head_name)
+                    lm_head_param = params_dict[head_name]
+                    weight_loader = getattr(lm_head_param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(lm_head_param, loaded_weight)
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:
                     continue
