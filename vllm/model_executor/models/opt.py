@@ -360,9 +360,9 @@ class OPTForCausalLM(nn.Module):
                 continue
             if "embed_tokens" in name:
                 # Copy word embedding to lm_head
-                head_name = name.replace("embed_tokens", "lm_head")
+                head_name = name.replace("model.decoder.embed_tokens", "lm_head")
                 if head_name in params_dict:
-                    lm_head_param = params_dict[params_dict]
+                    lm_head_param = params_dict[head_name]
                     weight_loader = getattr(lm_head_param, "weight_loader",
                                             default_weight_loader)
                     weight_loader(lm_head_param, loaded_weight)

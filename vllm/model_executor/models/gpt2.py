@@ -260,7 +260,7 @@ class GPT2LMHeadModel(nn.Module):
                 continue
             if "wte" in name:
                 # Copy word embedding to lm_head
-                head_name = name.replace("wte", "lm_head")
+                head_name = name.replace("transformer.wte", "lm_head")
                 if head_name in params_dict:
                     lm_head_param = params_dict[head_name]
                     weight_loader = getattr(lm_head_param, "weight_loader",

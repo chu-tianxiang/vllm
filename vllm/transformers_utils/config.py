@@ -1,6 +1,5 @@
 from typing import Optional
 
-import gguf
 from transformers import AutoConfig, PretrainedConfig
 
 from vllm.gguf_utils import extract_gguf_config

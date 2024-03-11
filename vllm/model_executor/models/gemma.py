@@ -344,7 +344,7 @@ class GemmaForCausalLM(nn.Module):
                 continue
             if "embed_tokens" in name:
                 # Copy word embedding to lm_head
-                head_name = name.replace("embed_tokens", "lm_head")
+                head_name = name.replace("model.embed_tokens", "lm_head")
                 if head_name in params_dict:
                     loaded_params.add(head_name)
                     lm_head_param = params_dict[head_name]

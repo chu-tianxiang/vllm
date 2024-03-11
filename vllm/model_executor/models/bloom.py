@@ -314,7 +314,7 @@ class BloomForCausalLM(nn.Module):
 
             if "word_embeddings" in name:
                 # Copy word embedding to lm_head
-                head_name = name.replace("word_embeddings", "lm_head")
+                head_name = name.replace("transformer.word_embeddings", "lm_head")
                 if head_name in params_dict:
                     lm_head_param = params_dict[head_name]
                     weight_loader = getattr(lm_head_param, "weight_loader",
