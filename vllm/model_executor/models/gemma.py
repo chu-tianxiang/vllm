@@ -364,7 +364,7 @@ class GemmaForCausalLM(nn.Module):
                 break
             else:
                 # Skip loading extra layer for lora models.
-                if "lm_head" in name:
+                if "lm_head" in name and name not in params_dict:
                     continue
                 # GemmaRMSNorm is different from Llama's in that it multiplies
                 # (1 + weight) to the output, instead of just weight.
