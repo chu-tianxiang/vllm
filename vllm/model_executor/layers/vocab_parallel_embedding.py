@@ -94,14 +94,21 @@ class VocabParallelEmbedding(torch.nn.Module):
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         output_dim = getattr(param, "output_dim", None)
+        packed_dim = getattr(param, "packed_dim", None)
         if output_dim is not None:
-            assert loaded_weight.shape[output_dim] == self.org_vocab_size
-            loaded_weight = loaded_weight.narrow(output_dim, self.vocab_start_index,
-                                                 min(self.vocab_end_index, self.org_vocab_size))
+            shard_offset = self.vocab_start_index
+            shard_size = min(self.vocab_end_index, self.org_vocab_size) - shard_offset
+            if packed_dim == output_dim:
+                shard_size = shard_size // param.pack_factor
+                shard_offset = shard_offset // param.pack_factor
+            loaded_weight = loaded_weight.narrow(output_dim, shard_offset, shard_size)
         if isinstance(param, torch.nn.parameter.UninitializedParameter):
             vocab_shape = list(loaded_weight.shape)
             if output_dim is not None:
-                vocab_shape[output_dim] = self.num_embeddings_per_partition
+                if packed_dim == output_dim:
+                    vocab_shape[output_dim] = self.num_embeddings_per_partition // param.pack_factor
+                else:
+                    vocab_shape[output_dim] = self.num_embeddings_per_partition
             param.materialize(vocab_shape, dtype=loaded_weight.dtype)
         if output_dim is not None:
             param.data.narrow(output_dim, 0, loaded_weight.shape[output_dim]).copy_(loaded_weight)

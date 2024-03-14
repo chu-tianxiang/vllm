@@ -127,15 +127,15 @@ class StablelmAttention(nn.Module):
         if linear_method is not None and not linear_method.quant_config.merge_weight():
             self.merge_weight = False
             self.q_proj = ColumnParallelLinear(
-                self.hidden_size, self.q_size,
+                self.hidden_size, self.total_num_heads * self.head_dim,
                 bias=self.qkv_bias,
                 linear_method=linear_method)
             self.k_proj = ColumnParallelLinear(
-                self.hidden_size, self.kv_size,
+                self.hidden_size, self.total_num_kv_heads * self.head_dim,
                 bias=self.qkv_bias,
                 linear_method=linear_method)
             self.v_proj = ColumnParallelLinear(
-                self.hidden_size, self.kv_size,
+                self.hidden_size, self.total_num_kv_heads * self.head_dim,
                 bias=self.qkv_bias,
                 linear_method=linear_method)
         else:

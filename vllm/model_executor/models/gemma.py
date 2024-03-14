@@ -28,7 +28,8 @@ from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear,
-                                               ColumnParallelLinear)
+                                               ColumnParallelLinear,
+                                               ReplicatedLinear)
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -120,15 +121,16 @@ class GemmaAttention(nn.Module):
 
         if linear_method is not None and not linear_method.quant_config.merge_weight():
             self.merge_weight = False
+            kv_class = ReplicatedLinear if self.total_num_kv_heads == 1 else ColumnParallelLinear
             self.q_proj = ColumnParallelLinear(
                 hidden_size, self.q_size,
                 bias=False,
                 linear_method=linear_method)
-            self.k_proj = ColumnParallelLinear(
+            self.k_proj = kv_class(
                 hidden_size, self.kv_size,
                 bias=False,
                 linear_method=linear_method)
-            self.v_proj = ColumnParallelLinear(
+            self.v_proj = kv_class(
                 hidden_size, self.kv_size,
                 bias=False,
                 linear_method=linear_method)

@@ -138,15 +138,15 @@ class LlamaAttention(nn.Module):
         if linear_method is not None and not linear_method.quant_config.merge_weight():
             self.merge_weight = False
             self.q_proj = ColumnParallelLinear(
-                hidden_size, self.q_size,
+                hidden_size, self.total_num_heads * self.head_dim,
                 bias=bias,
                 linear_method=linear_method)
             self.k_proj = ColumnParallelLinear(
-                hidden_size, self.kv_size,
+                hidden_size, self.total_num_kv_heads * self.head_dim,
                 bias=bias,
                 linear_method=linear_method)
             self.v_proj = ColumnParallelLinear(
-                hidden_size, self.kv_size,
+                hidden_size, self.total_num_kv_heads * self.head_dim,
                 bias=bias,
                 linear_method=linear_method)
         else:

@@ -169,7 +169,7 @@ uintptr_t make_q_matrix
     int device = q_weight.device().index();
     int width = q_weight.size(1);
     int groups = q_scale.size(0);
-    int height = q_invperm.size(0);
+    int height = q_perm.size(0);
 
     vllm::exl2::QMatrix* m = new vllm::exl2::QMatrix
     (

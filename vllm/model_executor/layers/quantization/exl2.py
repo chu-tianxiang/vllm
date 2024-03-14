@@ -89,11 +89,20 @@ class Exl2LinearMethod(LinearMethodBase):
         qweight = torch.nn.parameter.UninitializedParameter(requires_grad=False)
         set_weight_attrs(
             qweight, {
-                "input_dim": 0,
                 "output_dim": 1,
+                "ignore_warning": True
             })
         state_dict["q_weight"] = qweight
-        for name in ["q_groups", "q_invperm", "q_scale", "q_scale_max"]:
+        qscale = torch.nn.parameter.UninitializedParameter(requires_grad=False)
+        set_weight_attrs(
+            qscale, {
+                "output_dim": 1,
+                "packed_dim": 1,
+                "pack_factor": 8,
+                "ignore_warning": True
+            })
+        state_dict["q_scale"] = qscale
+        for name in ["q_groups", "q_invperm", "q_scale_max"]:
             fake_weight = torch.nn.parameter.UninitializedParameter(
                 requires_grad=False
             )
@@ -111,7 +120,8 @@ class Exl2LinearMethod(LinearMethodBase):
         if weights["exllama_state"] == 0:
             weights["q_scale_max"] /= 256
             weights["q_invperm"] = weights["q_invperm"].short()
-            weights["q_perm"] = torch.argsort(weights["q_invperm"]).to(torch.short)
+            if "q_perm" not in weights:
+                weights["q_perm"] = torch.argsort(weights["q_invperm"]).to(torch.short)
             if "q_group_map" not in weights:
                 weights["q_group_map"] = make_group_map(weights["q_groups"], weights["q_weight"].shape[0])
             weights["q_matrix"] = ops.exl2_make_q_matrix(
