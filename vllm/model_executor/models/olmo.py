@@ -43,7 +43,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from vllm.model_executor.input_metadata import InputMetadata
-from vllm.model_executor.layers.attention import PagedAttention
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     LinearMethodBase,
@@ -82,7 +82,8 @@ class SwiGLU(nn.Module):
 
 class OlmoAttention(nn.Module):
     """
-    This is the attention block where the output is computed as ``Attention(LN(x))`` in ``MLP(LN(x + Attention(LN(x))))``
+    This is the attention block where the output is computed as
+    ``Attention(LN(x))`` in ``MLP(LN(x + Attention(LN(x))))``
     (plus another skip connection).
     """
 
@@ -95,11 +96,12 @@ class OlmoAttention(nn.Module):
         self.config = config
         self.hidden_size = config.d_model
         assert config.d_model % config.n_heads == 0
-        tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
-        )
+        tensor_model_parallel_world_size = (
+            get_tensor_model_parallel_world_size())
         self.total_num_heads = self.config.n_heads
         assert self.total_num_heads % tensor_model_parallel_world_size == 0
-        self.num_heads = self.total_num_heads // tensor_model_parallel_world_size
+        self.num_heads = (self.total_num_heads //
+                          tensor_model_parallel_world_size)
         self.head_dim = self.hidden_size // self.total_num_heads
 
         # Layer norms.
@@ -127,9 +129,9 @@ class OlmoAttention(nn.Module):
                 base=rope_theta,
             )
         self.scaling = self.head_dim**-0.5
-        self.attn = PagedAttention(self.num_heads,
-                                   self.head_dim,
-                                   scale=self.scaling)
+        self.attn = Attention(self.num_heads,
+                              self.head_dim,
+                              scale=self.scaling)
 
         # Attention output projection.
         self.attn_out = RowParallelLinear(
@@ -159,7 +161,8 @@ class OlmoAttention(nn.Module):
 
 class OlmoMLP(nn.Module):
     """
-    This is the MLP block where the output is computed as ``MLP(LN(x))`` in ``MLP(LN(x + Attention(LN(x))))``
+    This is the MLP block where the output is computed as
+    ``MLP(LN(x))`` in ``MLP(LN(x + Attention(LN(x))))``
     (plus another skip connection).
     """
 
@@ -218,7 +221,8 @@ class OlmoMLP(nn.Module):
 
 class OlmoBlock(nn.Module):
     """
-    This is a typical transformer block where the output is computed as ``MLP(LN(x + Attention(LN(x))))``
+    This is a typical transformer block where the output is
+    computed as ``MLP(LN(x + Attention(LN(x))))``
     (plus another skip connection).
     """
 

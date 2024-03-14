@@ -50,8 +50,8 @@ class GPTQConfig(QuantizationConfig):
         self.pack_factor = Fraction(32, self.weight_bits)
         if self.weight_bits not in [2, 3, 4, 8]:
             raise ValueError(
-                "Currently, only 2/3/4/8-bit weight quantization is supported for "
-                f"GPTQ, but got {self.weight_bits} bits.")
+                "Currently, only 2/3/4/8-bit weight quantization is "
+                f"supported for GPTQ, but got {self.weight_bits} bits.")
 
     def __repr__(self) -> str:
         return (f"GPTQConfig(weight_bits={self.weight_bits}, "
@@ -135,7 +135,8 @@ class GPTQLinearMethod(LinearMethodBase):
                 "The input size is not aligned with the quantized "
                 "weight shape. This can be caused by too large "
                 "tensor parallel size.")
-        if output_size_per_partition % self.quant_config.pack_factor.numerator != 0:
+        if (output_size_per_partition % self.quant_config.pack_factor.numerator
+                != 0):
             raise ValueError(
                 "The output size is not aligned with the quantized "
                 "weight shape. This can be caused by too large "
@@ -148,8 +149,9 @@ class GPTQLinearMethod(LinearMethodBase):
         exllama_state = ExllamaState.UNINITIALIZED
         scale_and_zero_size = input_size // group_size
         scale_and_zero_input_dim = None
-        # For act-order models, we cannot use Exllama for row parallel layer
-        if input_size != input_size_per_partition and self.quant_config.group_size != -1:
+        if (input_size != input_size_per_partition
+                and self.quant_config.group_size != -1):
+            # For act-order models, we cannot use Exllama for row parallel layer
             if self.quant_config.desc_act:
                 exllama_state = ExllamaState.UNUSED
             else:
@@ -251,8 +253,8 @@ class GPTQLinearMethod(LinearMethodBase):
             # reorder input for act-order model
             if weights["g_idx"].device != torch.device("meta"):
                 reshaped_x = reshaped_x[:, weights["g_idx"]]
-            ops.marlin_gemm(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
-                            weights["scales"], weights["qzeros"], self.workspace)
+            ops.marlin_gemm_zero(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
+                                 weights["scales"], weights["qzeros"], self.workspace)
         else:
             output = ops.gptq_gemm(reshaped_x, weights["qweight"],
                                    weights["qzeros"], weights["scales"],

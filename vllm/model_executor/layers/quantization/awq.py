@@ -6,7 +6,8 @@ from torch.nn.parameter import Parameter
 from vllm._C import ops
 from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
-from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+from vllm.model_executor.layers.quantization.base_config import (
+    QuantizationConfig)
 
 def pemute_weight(scale, qzeros):
     scale_perm = [i + 8 * j for i in range(8) for j in range(8)]
@@ -66,7 +67,8 @@ class AWQConfig(QuantizationConfig):
     def get_config_filenames() -> List[str]:
         return [
             "quant_config.json",  # E.g., casperhansen/vicuna-7b-v1.5-awq
-            "quantize_config.json",  # E.g., abhinavkulkarni/mosaicml-mpt-7b-instruct-w4-g128-awq
+            # E.g., abhinavkulkarni/mosaicml-mpt-7b-instruct-w4-g128-awq
+            "quantize_config.json",
         ]
 
     @classmethod
@@ -183,8 +185,8 @@ class AWQLinearMethod(LinearMethodBase):
 
         if weights["marlin_state"] == 1:
             output = torch.empty(out_shape, dtype=x.dtype, device=x.device)
-            ops.marlin_gemm(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
-                            weights["scales"], weights["qzeros"], self.workspace)
+            ops.marlin_gemm_zero(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
+                                 weights["scales"], weights["qzeros"], self.workspace)
             return output.view(out_shape)
 
         # num_tokens >= threshold

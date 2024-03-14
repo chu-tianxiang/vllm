@@ -25,7 +25,7 @@ from transformers import GPT2Config
 
 from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.layers.activation import get_act_fn
-from vllm.model_executor.layers.attention import PagedAttention
+from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                LinearMethodBase,
                                                QKVParallelLinear,
@@ -73,9 +73,7 @@ class GPT2Attention(nn.Module):
             bias=True,
             linear_method=linear_method,
         )
-        self.attn = PagedAttention(self.num_heads,
-                                   self.head_dim,
-                                   scale=self.scale)
+        self.attn = Attention(self.num_heads, self.head_dim, scale=self.scale)
 
     def forward(
         self,
@@ -270,7 +268,7 @@ class GPT2LMHeadModel(nn.Module):
                 # Skip attention mask.
                 # NOTE: "c_attn.bias" should not be skipped.
                 continue
-            if not name.startswith("transformer."):
+            if not name.startswith("transformer.") and "lm_head" not in name:
                 name = "transformer." + name
             param = params_dict[name]
             # The HF's GPT-2 implementation uses Conv1D instead of Linear.

@@ -36,7 +36,7 @@ def _is_neuron() -> bool:
     torch_neuronx_installed = True
     try:
         subprocess.run(["neuron-ls"], capture_output=True, check=True)
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError):
         torch_neuronx_installed = False
     return torch_neuronx_installed
 
@@ -142,8 +142,8 @@ def get_pytorch_rocm_arch() -> Set[str]:
     # If we don't have PYTORCH_ROCM_ARCH specified pull the list from rocm_agent_enumerator
     if env_arch_list is None:
         command = "rocm_agent_enumerator"
-        env_arch_list = subprocess.check_output([command]).decode('utf-8')\
-                        .strip().replace("\n", ";")
+        env_arch_list = (subprocess.check_output(
+            [command]).decode('utf-8').strip().replace("\n", ";"))
         arch_source_str = "rocm_agent_enumerator"
     else:
         arch_source_str = "PYTORCH_ROCM_ARCH env variable"
@@ -346,7 +346,9 @@ vllm_extension_sources = [
 if _is_cuda():
     vllm_extension_sources.append("csrc/quantization/awq/gemm_kernels.cu")
     vllm_extension_sources.append("csrc/quantization/quip/origin_order.cu")
-    vllm_extension_sources.append("csrc/quantization/marlin/marlin_cuda_kernel.cu")
+    vllm_extension_sources.append("csrc/quantization/marlin/marlin_cuda_kernel_zero.cu")
+    vllm_extension_sources.append(
+        "csrc/quantization/marlin/marlin_cuda_kernel.cu")
     vllm_extension_sources.append("csrc/custom_all_reduce.cu")
 
     # Add MoE kernels.
@@ -434,6 +436,12 @@ def get_requirements() -> List[str]:
     else:
         with open(get_path("requirements.txt")) as f:
             requirements = f.read().strip().split("\n")
+        if nvcc_cuda_version <= Version("11.8"):
+            # replace cupy-cuda12x with cupy-cuda11x for cuda 11.x
+            for i in range(len(requirements)):
+                if requirements[i].startswith("cupy-cuda12x"):
+                    requirements[i] = "cupy-cuda11x"
+                    break
     return requirements
 
 

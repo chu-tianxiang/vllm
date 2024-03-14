@@ -25,7 +25,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   ops.def(
     "gelu_and_mul",
     &gelu_and_mul,
-    "Activation function used in GeGLU.");
+    "Activation function used in GeGLU with `none` approximation.");
+  ops.def(
+    "gelu_tanh_and_mul",
+    &gelu_tanh_and_mul,
+    "Activation function used in GeGLU with `tanh` approximation.");
   ops.def(
     "gelu_new",
     &gelu_new,
@@ -52,16 +56,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &rotary_embedding,
     "Apply GPT-NeoX or GPT-J style rotary embedding to query and key");
 
-  // Quantization ops
+  ops.def(
+    "batched_rotary_embedding",
+    &batched_rotary_embedding,
+    "Apply GPT-NeoX or GPT-J style rotary embedding to query and key (supports multiple loras)");
+
+// Quantization ops
 #ifndef USE_ROCM
   ops.def("awq_gemm", &awq_gemm, "Quantized GEMM for AWQ");
   ops.def("quip_decompress", &decompress_e8p_origorder, "decompress_packed_e8p");
   ops.def("quip_gemv", &e8p_mm_origorder, "e8p_mm_origorder");
-  ops.def("marlin_gemm", &marlin_gemm, "Marlin Optimized Quantized GEMM for GPTQ");
+  ops.def("marlin_gemm_zero", &marlin_gemm_zero, "Marlin Optimized Quantized GEMM for GPTQ");
   ops.def("awq_to_marlin", &awq_to_marlin, "Convert awq model to marlin packing");
   ops.def("gptq_to_marlin", &gptq_to_marlin, "Convert gptq model to marlin packing");
+  ops.def("marlin_gemm", &marlin_gemm, "Marlin Optimized Quantized GEMM for GPTQ");
   ops.def("awq_dequantize", &awq_dequantize, "Dequantization for AWQ");
 #endif
+
   ops.def("gptq_gemm", &gptq_gemm, "Quantized GEMM for GPTQ");
   ops.def("gptq_shuffle", &gptq_shuffle, "Post processing for GPTQ");
   ops.def("squeezellm_gemm", &squeezellm_gemm, "Quantized GEMM for SqueezeLLM");
