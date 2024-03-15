@@ -15,28 +15,20 @@
  */
 
 
-#ifndef MARLIN_CUDA_KERNEL_CUH
-#define MARLIN_CUDA_KERNEL_CUH
-
 #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-namespace vllm {
-namespace marlin {
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
-  void marlin_gemm(
-  const torch::Tensor& input,
-  const torch::Tensor& weights,
-        torch::Tensor& output,
-  const torch::Tensor& scales,
-  const torch::Tensor& zeros,
-        torch::Tensor& workspace
-) {}
+
 #else
+
+namespace vllm {
+namespace marlin {
 
 constexpr int ceildiv(int a, int b) {
   return (a + b - 1) / b;
@@ -807,157 +799,39 @@ int marlin_cuda(
   return ret;
 }
 
-#endif
-
-} // namespace marlin
-} // namespace vllm
-
-const int ERR_PROB_SHAPE = 1;
-const int ERR_KERN_SHAPE = 2;
-
-// input:     `torch.half` input matrix of shape `(m, k)` in standard row-major layout
-// weights:   `torch.int` weight matrix of original shape `(k, n)` in Marlin format; see `Layer.pack()`
-// output:    `torch.half` out matrix of shape `(m, n)` in standard row-major layout
-// scales:    `torch.half` scales of shape `(m / groupsize, n)`
-// workspace: `torch.int` tensor with at least `n / 128` entries that are all zero
-
-void marlin_gemm_zero(
-  const torch::Tensor& input,
-  const torch::Tensor& weights,
-        torch::Tensor& output,
-  const torch::Tensor& scales,
-  const torch::Tensor& zeros,
-        torch::Tensor& workspace
-) {
-  // thread_k: `k` size of a thread_tile in `weights` (can usually be left as auto -1)
-  int thread_k = -1;
-  // thread_n: `n` size of a thread_tile in `weights` (can usually be left as auto -1)
-  int thread_n = -1;
-  // sms: number of SMs to use for the kernel (can usually be left as auto -1)
-  int sms = -1;
-
-  int prob_m = input.size(0);
-  int prob_n = output.size(1);
-  int prob_k = input.size(1);
-  int groupsize = (scales.size(0) == 1) ? -1 : prob_k / scales.size(0);
-  if (groupsize != -1 && groupsize * scales.size(0) != prob_k)
-    AT_ERROR("k=", prob_k, " not compatible with ", scales.size(0), " groups.");
-  int dev = input.get_device();
-  int err = vllm::marlin::marlin_cuda(
-    input.data_ptr(),
-    weights.data_ptr(),
-    output.data_ptr(),
-    scales.data_ptr(),
-    zeros.data_ptr(),
-    prob_m, prob_n, prob_k,
-    workspace.data_ptr(),
-    groupsize,
-    dev,
-    at::cuda::getCurrentCUDAStream(dev),
-    thread_k,
-    thread_n,
-    sms
-  );
-  if (err == ERR_PROB_SHAPE) {
-    AT_ERROR(
-      "Problem (m=", prob_m, ", n=", prob_n, ", k=", prob_k, ")",
-      " not compatible with thread_k=", thread_k, ", thread_n=", thread_n, "."
-    );
-  } else if (err == ERR_KERN_SHAPE) {
-    AT_ERROR(
-      "No kernel implementation for thread_k=", thread_k, ", thread_n=", thread_n, ", groupsize=", groupsize, "."
-    );
-  }
-}
-
-
-__global__ void gptq_to_marlin(
-  uint32_t* in,
-  uint32_t* out,
-  int* g_idx,
+__global__ void dequant_marlin(
+  const uint32_t* qweight,
+  const half* scales,
+  const half* zeros,
+  half* out,
   int m,
-  int n
+  int n,
+  int groupsize
 ) {
-  uint32_t col = blockIdx.y * 64;
-  uint32_t t = threadIdx.x;
-
-  // marlin packs 4 16x16 blocks one time;
-  const int pad_len = 18;
-  __shared__ uint8_t block[4][16][pad_len];
-
-  // unpack
-  #pragma unroll
-  for (int i = 0; i < 16; i += 1) {
-    uint32_t source_row = g_idx? g_idx[blockIdx.x * 16 + i] : (blockIdx.x * 16 + i);
-    int in_row = source_row >> 3;
-    int in_subrow = source_row & 0x07;
-    int in_row_shift = in_subrow << 2;
-    for (int offset = t; offset < 64; offset += 32) {
-      //printf("in_row: %d, n: %d, col: %d, offset: %d\n", in_row, n, col, offset);
-      uint32_t v = in[in_row * n + col + offset];
-      block[offset / 16][i][offset % 16] = (v >> in_row_shift) & 0xf;
-    }
-  }
-
-  // repack
-  // ref: _get_perms @ https://github.com/IST-DASLab/marlin/blob/master/marlin/__init__.py
-  uint32_t srow = (t % 4) * 2;
-  uint32_t scol = t / 4;
-
-  uint32_t idx[8][2];
-  idx[0][0] = srow;     idx[0][1] = scol;
-  idx[1][0] = srow + 8; idx[1][1] = scol;
-  idx[2][0] = srow;     idx[2][1] = scol + 8;
-  idx[3][0] = srow + 8; idx[3][1] = scol + 8;
-
-  idx[4][0] = srow + 1; idx[4][1] = scol;
-  idx[5][0] = srow + 9; idx[5][1] = scol;
-  idx[6][0] = srow + 1; idx[6][1] = scol + 8;
-  idx[7][0] = srow + 9; idx[7][1] = scol + 8;
-
-#pragma unroll
+  int t = threadIdx.x;
+  int group = blockIdx.x * 16 / groupsize;
+  int4 pack = *reinterpret_cast<const int4*>(qweight + blockIdx.x * n * 2 + blockIdx.y * 128 + t * 4);
+  const FragS* sscale = reinterpret_cast<const FragS*>(scales + group * n + blockIdx.y * 64 + t / 4 * 8);
+  const FragS* szero = reinterpret_cast<const FragS*>(zeros + group * n + blockIdx.y * 64 + t / 4 * 8);
+  out = out + (blockIdx.x * 16 + (t % 4) * 2) * n + blockIdx.y * 64 + t / 4;
+  uint32_t* unpack = reinterpret_cast<uint32_t*>(&pack);
   for (int i = 0; i < 4; i += 1) {
-    uint32_t v[8];
-#pragma unroll
-    for (int j = 0; j < 8; ++j) {
-      v[j] = block[i][idx[j][0]][idx[j][1]];
-    }
-
-    uint32_t pack = (v[7] << 28) | (v[6] << 24) | (v[5] << 20) | (v[4] << 16) |
-        (v[3] << 12) | (v[2] << 8) | (v[1] << 4) | v[0];
-
-    out[blockIdx.x * n * 2 + blockIdx.y * 128 + t * 4 + i] = pack;
+    FragB frag_b0 = dequant(unpack[i]);
+    FragB frag_b1 = dequant(unpack[i] >> 8);
+    FragS frag_s = sscale[i];
+    FragS frag_z = szero[i];
+    scale(frag_b0, frag_s, frag_z, 0);
+    scale(frag_b1, frag_s, frag_z, 1);
+    *out = frag_b0[0].x;
+    *(out + n) = frag_b0[0].y;
+    *(out + 8 * n) = frag_b0[1].x;
+    *(out + 9 * n) = frag_b0[1].y;
+    *(out + 8) = frag_b1[0].x;
+    *(out + n + 8) = frag_b1[0].y;
+    *(out + 8 * n + 8) = frag_b1[1].x;
+    *(out + 9 * n + 8) = frag_b1[1].y;
+    out = out + 16;
   }
-}
-#endif
-
-
-torch::Tensor gptq_to_marlin(
-    torch::Tensor W,
-    torch::Tensor g_idx
-){
-  int m = W.sizes()[0];
-  int n = W.sizes()[1];
-
-  assert(W.is_contiguous());
-  assert(W.dtype() == at::kInt);
-  assert(m % 2 == 0);
-  assert(n % 64 == 0);
-  auto result = at::empty(
-      {m / 2, n * 2}, at::TensorOptions().dtype(at::kInt).device(W.device()));
-
-  const dim3 threads(32);
-  // marlin packs 16 x 64 block and gptq packs 8 x 1
-  const dim3 blocks(m / 2, n / 64);
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-  gptq_to_marlin<<<blocks, threads, 0, stream>>>(
-    (uint32_t*)W.data_ptr(),
-    (uint32_t*)result.data_ptr(),
-    g_idx.device().is_meta() ? NULL : (int*)g_idx.data_ptr(),
-    m,
-    n
-  );
-  return result;
 }
 
 __global__ void awq_to_marlin(
@@ -1018,6 +892,185 @@ __global__ void awq_to_marlin(
   }
 }
 
+__global__ void gptq_to_marlin(
+  uint32_t* in,
+  uint32_t* out,
+  int* g_idx,
+  int m,
+  int n
+) {
+  uint32_t col = blockIdx.y * 64;
+  uint32_t t = threadIdx.x;
+
+  // marlin packs 4 16x16 blocks one time;
+  const int pad_len = 18;
+  __shared__ uint8_t block[4][16][pad_len];
+
+  // unpack
+  #pragma unroll
+  for (int i = 0; i < 16; i += 1) {
+    uint32_t source_row = g_idx? g_idx[blockIdx.x * 16 + i] : (blockIdx.x * 16 + i);
+    int in_row = source_row >> 3;
+    int in_subrow = source_row & 0x07;
+    int in_row_shift = in_subrow << 2;
+    for (int offset = t; offset < 64; offset += 32) {
+      //printf("in_row: %d, n: %d, col: %d, offset: %d\n", in_row, n, col, offset);
+      uint32_t v = in[in_row * n + col + offset];
+      block[offset / 16][i][offset % 16] = (v >> in_row_shift) & 0xf;
+    }
+  }
+
+  // repack
+  // ref: _get_perms @ https://github.com/IST-DASLab/marlin/blob/master/marlin/__init__.py
+  uint32_t srow = (t % 4) * 2;
+  uint32_t scol = t / 4;
+
+  uint32_t idx[8][2];
+  idx[0][0] = srow;     idx[0][1] = scol;
+  idx[1][0] = srow + 8; idx[1][1] = scol;
+  idx[2][0] = srow;     idx[2][1] = scol + 8;
+  idx[3][0] = srow + 8; idx[3][1] = scol + 8;
+
+  idx[4][0] = srow + 1; idx[4][1] = scol;
+  idx[5][0] = srow + 9; idx[5][1] = scol;
+  idx[6][0] = srow + 1; idx[6][1] = scol + 8;
+  idx[7][0] = srow + 9; idx[7][1] = scol + 8;
+
+#pragma unroll
+  for (int i = 0; i < 4; i += 1) {
+    uint32_t v[8];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+      v[j] = block[i][idx[j][0]][idx[j][1]];
+    }
+
+    uint32_t pack = (v[7] << 28) | (v[6] << 24) | (v[5] << 20) | (v[4] << 16) |
+        (v[3] << 12) | (v[2] << 8) | (v[1] << 4) | v[0];
+
+    out[blockIdx.x * n * 2 + blockIdx.y * 128 + t * 4 + i] = pack;
+  }
+}
+
+} // namespace marlin
+} // namespace vllm
+
+const int ERR_PROB_SHAPE = 1;
+const int ERR_KERN_SHAPE = 2;
+
+// input:     `torch.half` input matrix of shape `(m, k)` in standard row-major layout
+// weights:   `torch.int` weight matrix of original shape `(k, n)` in Marlin format; see `Layer.pack()`
+// output:    `torch.half` out matrix of shape `(m, n)` in standard row-major layout
+// scales:    `torch.half` scales of shape `(m / groupsize, n)`
+// workspace: `torch.int` tensor with at least `n / 128` entries that are all zero
+
+void marlin_gemm_zero(
+  const torch::Tensor& input,
+  const torch::Tensor& weights,
+        torch::Tensor& output,
+  const torch::Tensor& scales,
+  const torch::Tensor& zeros,
+        torch::Tensor& workspace
+) {
+  // thread_k: `k` size of a thread_tile in `weights` (can usually be left as auto -1)
+  int thread_k = -1;
+  // thread_n: `n` size of a thread_tile in `weights` (can usually be left as auto -1)
+  int thread_n = -1;
+  // sms: number of SMs to use for the kernel (can usually be left as auto -1)
+  int sms = -1;
+
+  int prob_m = input.size(0);
+  int prob_n = output.size(1);
+  int prob_k = input.size(1);
+  int groupsize = (scales.size(0) == 1) ? -1 : prob_k / scales.size(0);
+  if (groupsize != -1 && groupsize * scales.size(0) != prob_k)
+    AT_ERROR("k=", prob_k, " not compatible with ", scales.size(0), " groups.");
+  int dev = input.get_device();
+  if (prob_m >= 256) {
+    auto options = torch::TensorOptions().dtype(input.dtype()).device(input.device());
+    at::Tensor temp_dq = torch::empty({prob_k, prob_n}, options);
+    dim3 blockDim, gridDim;
+    gridDim.x = weights.size(0);
+    gridDim.y = weights.size(1) / 128;
+    blockDim.x = 32;
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    vllm::marlin::dequant_marlin<<<gridDim, blockDim, 0, stream>>>
+    (
+        (const uint32_t*) weights.data_ptr(),
+        (const half*)scales.data_ptr(),
+        (const half*)zeros.data_ptr(),
+        (half*)temp_dq.data_ptr(),
+        prob_k,
+        prob_n,
+        groupsize
+    );
+
+    const half alpha = __float2half(1.0f);
+    const half beta = __float2half(0.0f);
+    cublasHgemm(at::cuda::getCurrentCUDABlasHandle(),
+                CUBLAS_OP_N,
+                CUBLAS_OP_N,
+                prob_n, prob_m, prob_k,
+                &alpha, (half*)temp_dq.data_ptr(), prob_n,
+                (const half*)input.data_ptr(), prob_k,
+                &beta, (half*)output.data_ptr(), prob_n);
+  } else {
+    int err = vllm::marlin::marlin_cuda(
+      input.data_ptr(),
+      weights.data_ptr(),
+      output.data_ptr(),
+      scales.data_ptr(),
+      zeros.data_ptr(),
+      prob_m, prob_n, prob_k,
+      workspace.data_ptr(),
+      groupsize,
+      dev,
+      at::cuda::getCurrentCUDAStream(dev),
+      thread_k,
+      thread_n,
+      sms
+    );
+    if (err == ERR_PROB_SHAPE) {
+      AT_ERROR(
+        "Problem (m=", prob_m, ", n=", prob_n, ", k=", prob_k, ")",
+        " not compatible with thread_k=", thread_k, ", thread_n=", thread_n, "."
+      );
+    } else if (err == ERR_KERN_SHAPE) {
+      AT_ERROR(
+        "No kernel implementation for thread_k=", thread_k, ", thread_n=", thread_n, ", groupsize=", groupsize, "."
+      );
+    }
+  }
+}
+
+
+torch::Tensor gptq_to_marlin(
+    torch::Tensor W,
+    torch::Tensor g_idx
+){
+  int m = W.sizes()[0];
+  int n = W.sizes()[1];
+
+  assert(W.is_contiguous());
+  assert(W.dtype() == at::kInt);
+  assert(m % 2 == 0);
+  assert(n % 64 == 0);
+  auto result = at::empty(
+      {m / 2, n * 2}, at::TensorOptions().dtype(at::kInt).device(W.device()));
+
+  const dim3 threads(32);
+  // marlin packs 16 x 64 block and gptq packs 8 x 1
+  const dim3 blocks(m / 2, n / 64);
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  vllm::marlin::gptq_to_marlin<<<blocks, threads, 0, stream>>>(
+    (uint32_t*)W.data_ptr(),
+    (uint32_t*)result.data_ptr(),
+    g_idx.device().is_meta() ? NULL : (int*)g_idx.data_ptr(),
+    m,
+    n
+  );
+  return result;
+}
+
 
 torch::Tensor awq_to_marlin(
     torch::Tensor W
@@ -1034,7 +1087,7 @@ torch::Tensor awq_to_marlin(
   // marlin packs 16 x 64 block and awq packs 1 x 8
   const dim3 blocks(m / 16, n / 8);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-  awq_to_marlin<<<blocks, threads, 0, stream>>>(
+  vllm::marlin::awq_to_marlin<<<blocks, threads, 0, stream>>>(
     (uint32_t*)W.data_ptr(),
     (uint32_t*)result.data_ptr(),
     m,
@@ -1042,3 +1095,4 @@ torch::Tensor awq_to_marlin(
   );
   return result;
 }
+#endif
