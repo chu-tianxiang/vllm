@@ -138,7 +138,10 @@ torch::Tensor exl2_gemm
 
     auto options = torch::TensorOptions().dtype(a.dtype()).device(a.device());
     at::Tensor c = torch::empty({a.size(0), qm->width}, options);
-    at::Tensor temp_dq = torch::zeros({a.size(1), qm->width}, options);
+    at::Tensor temp_dq;
+    if (c.size(0) > MAX_Q_GEMM_ROWS) {
+      temp_dq = torch::zeros({a.size(1), qm->width}, options);
+    }
 
     vllm::exl2::gemm_half_q_half_cuda
     (
@@ -150,7 +153,7 @@ torch::Tensor exl2_gemm
         c.size(1),  // n
         a.size(1),  // k
         true,
-        (half*) temp_dq.data_ptr()
+        c.size(0) > MAX_Q_GEMM_ROWS? (half*)temp_dq.data_ptr() : NULL
     );
     return c;
 }
