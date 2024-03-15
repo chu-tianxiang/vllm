@@ -16,7 +16,7 @@
 namespace vllm {
 namespace exl2 {
 
-#define MAX_Q_GEMM_ROWS 0
+#define MAX_Q_GEMM_ROWS 32
 #define EXL2_BLOCK_KN_SIZE 64
 #define EXL2_BLOCK_M_SIZE_MAX 8
 #define EXL2_MAX_GROUPS_IN_BLOCK (EXL2_BLOCK_KN_SIZE / 32)
