@@ -8,7 +8,8 @@ import torch.nn as nn
 from vllm.config import DeviceConfig, ModelConfig
 from vllm.model_executor.models import ModelRegistry
 from vllm.model_executor.weight_utils import (get_quant_config,
-                                              initialize_dummy_weights)
+                                              initialize_dummy_weights,
+                                              post_init_exl2)
 
 
 @contextlib.contextmanager
@@ -85,4 +86,10 @@ def get_model(model_config: ModelConfig, device_config: DeviceConfig,
             # Load the weights from the cached or downloaded files.
             model.load_weights(model_config.model, model_config.download_dir,
                                model_config.load_format, model_config.revision)
+
+    # Patch for exl2 tensor parallel
+    if model_config.quantization == "exl2":
+        for _, module in model.named_modules():
+            if "RowParallelLinear" in str(module.__class__):
+                post_init_exl2(module)
     return model.eval()

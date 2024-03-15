@@ -16,7 +16,7 @@
 namespace vllm {
 namespace exl2 {
 
-#define MAX_Q_GEMM_ROWS 32
+#define MAX_Q_GEMM_ROWS 0
 #define EXL2_BLOCK_KN_SIZE 64
 #define EXL2_BLOCK_M_SIZE_MAX 8
 #define EXL2_MAX_GROUPS_IN_BLOCK (EXL2_BLOCK_KN_SIZE / 32)
@@ -42,7 +42,7 @@ void gemm_half_q_half_cuda_part
         blockDim.z = 1;
         gridDim.x = DIVIDE(size_n, EXL2_BLOCK_KN_SIZE * 4);
         gridDim.y = DIVIDE(size_m, m_count);
-        gridDim.z = DIVIDE(size_k, EXL2_BLOCK_KN_SIZE);
+        gridDim.z = DIVIDE(b->height, EXL2_BLOCK_KN_SIZE);
 
         fp_gemm_half_q_half_kernel kernel = pick_gemm_half_q_half_kernel(m_count);
         const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -57,6 +57,7 @@ void gemm_half_q_half_cuda_part
             size_m,
             size_n,
             size_k,
+            b->height,
             b->groups,
             b->cuda_q_group_map,
             b->cuda_q_perm,
@@ -137,7 +138,7 @@ torch::Tensor exl2_gemm
 
     auto options = torch::TensorOptions().dtype(a.dtype()).device(a.device());
     at::Tensor c = torch::empty({a.size(0), qm->width}, options);
-    at::Tensor temp_dq = torch::empty({a.size(1), qm->width}, options);
+    at::Tensor temp_dq = torch::zeros({a.size(1), qm->width}, options);
 
     vllm::exl2::gemm_half_q_half_cuda
     (
