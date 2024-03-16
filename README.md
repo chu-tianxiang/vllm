@@ -38,6 +38,18 @@ python -m vllm.entrypoints.api_server --model LoneStriker/Qwen1.5-14B-Chat-3.0bp
 
 SOTA 2-bit models quantized using [QuIP-for-all](https://github.com/chu-tianxiang/QuIP-for-all). Only support `tensor_parallel_size=1`.
 
+* Better performance for GPTQ & AWQ
+
+We extend the marlin kernel to desc-act GPTQ model as well as AWQ model with zero points, and repack the model on the fly.
+Following the latency for 256 input size and 256 output size with Mistral-7B quants.
+
+| Batch | AWQ-main | AWQ-this | GPTQ-main | GPTQ-this |
+|-------|---------|----------|-----------|-----------|
+| 1     | 2.42    | **1.45** | **1.43**  |  1.76     |
+| 4     | 2.62    | **1.65** | 2.01      |  **1.98** |
+| 16    | 3.58    | **2.38** | 4.77      |  **2.74** |
+| 64    | 8.91    | **5.94** | 10.46     |  **6.44** |
+| 256   | 30.85   | **23.03**| 24.81     |  **24.40**|
 
 ---
 
