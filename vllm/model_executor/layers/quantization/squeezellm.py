@@ -60,6 +60,12 @@ class SqueezeLLMConfig(QuantizationConfig):
     def merge_weight(self) -> bool:
         return True
 
+    def quant_vocab(self) -> List[bool]:
+        return (False, False)
+
+    def support_fused_moe(self) -> bool:
+        return False
+
 
 class SqueezeLLMLinearMethod(LinearMethodBase):
     """Linear method for SqueezeLLM.
@@ -131,3 +137,10 @@ class SqueezeLLMLinearMethod(LinearMethodBase):
         if bias is not None:
             out = out + bias
         return out.reshape(out_shape)
+
+    def apply_moe_weights(self, w1: Dict[str,
+                                         torch.Tensor], w2: Dict[str,
+                                                                 torch.Tensor],
+                          x: torch.Tensor, gating_output: torch.Tensor,
+                          topk: int, renormalize: bool) -> torch.Tensor:
+        raise NotImplementedError

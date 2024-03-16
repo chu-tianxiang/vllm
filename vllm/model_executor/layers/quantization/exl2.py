@@ -62,8 +62,11 @@ class Exl2Config(QuantizationConfig):
     def merge_weight(self) -> bool:
         return False
 
-    def quant_vocab(self) -> Optional[bool]:
+    def quant_vocab(self) -> List[bool]:
         return (False, True)
+
+    def support_fused_moe(self) -> bool:
+        return False
 
 
 class Exl2LinearMethod(LinearMethodBase):
@@ -139,3 +142,10 @@ class Exl2LinearMethod(LinearMethodBase):
         if bias is not None:
             output = output + bias
         return output.reshape(out_shape)
+
+    def apply_moe_weights(self, w1: Dict[str,
+                                         torch.Tensor], w2: Dict[str,
+                                                                 torch.Tensor],
+                          x: torch.Tensor, gating_output: torch.Tensor,
+                          topk: int, renormalize: bool) -> torch.Tensor:
+        raise NotImplementedError

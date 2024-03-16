@@ -68,5 +68,11 @@ class QuantizationConfig(ABC):
         """whether fuse qkv and up/gate."""
         raise NotImplementedError
 
-    def quant_vocab(self) -> Optional[bool]:
+    @abstractmethod
+    def quant_vocab(self) -> List[bool]:
         return (False, False)
+
+    @abstractmethod
+    def support_fused_moe(self) -> bool:
+        """Whether fused moe kernel is implemented"""
+        raise NotImplementedError

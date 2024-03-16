@@ -60,8 +60,11 @@ class GGUFConfig(QuantizationConfig):
     def merge_weight(self) -> bool:
         return False
 
-    def quant_vocab(self) -> Optional[bool]:
+    def quant_vocab(self) -> List[bool]:
         return (True, True)
+
+    def support_fused_moe(self) -> bool:
+        return False
 
 
 class GGUFLinearMethod(LinearMethodBase):
@@ -145,3 +148,10 @@ class GGUFLinearMethod(LinearMethodBase):
         dequant = ops.ggml_dequantize(quant, weight_type,
                                       hidden_size, x_flat.shape[0])
         return dequant.view(*x.shape, hidden_size)
+
+    def apply_moe_weights(self, w1: Dict[str,
+                                         torch.Tensor], w2: Dict[str,
+                                                                 torch.Tensor],
+                          x: torch.Tensor, gating_output: torch.Tensor,
+                          topk: int, renormalize: bool) -> torch.Tensor:
+        raise NotImplementedError
