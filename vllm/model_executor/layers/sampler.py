@@ -42,12 +42,17 @@ class Sampler(nn.Module):
 
     def forward(
         self,
-        logits: torch.Tensor,
+        lm_head: "ParallelLMHead",
+        hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
         # Get the hidden states that we use for sampling.
-        if not self.logits_as_hidden_states:
-            logits = _prune_hidden_states(logits, sampling_metadata)
+        if self.logits_as_hidden_states:
+            logits = hidden_states
+        else:
+            hidden_states = _prune_hidden_states(hidden_states,
+                                                 sampling_metadata)
+            logits = lm_head(hidden_states)
             logits = tensor_model_parallel_gather(logits)
             # Remove paddings in vocab (if any).
             if logits is not None:

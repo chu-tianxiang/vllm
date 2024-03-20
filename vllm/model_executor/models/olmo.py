@@ -351,7 +351,7 @@ class OLMoForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.model.transformer.ff_out(hidden_states),
+        next_tokens = self.sampler(self.model.transformer.ff_out, hidden_states,
                                    sampling_metadata)
         return next_tokens
 

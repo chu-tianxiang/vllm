@@ -243,17 +243,12 @@ class Starcoder2ForCausalLM(nn.Module):
         self.model = Starcoder2Model(config, linear_method=linear_method)
         self.vocab_size = config.vocab_size
         self.unpadded_vocab_size = config.vocab_size
-        if config.tie_word_embeddings:
-            self.lm_head_weight = self.model.embed_tokens.weight
-        else:
-            self.unpadded_vocab_size = config.vocab_size
-            self.lm_head = ParallelLMHead(
-                self.unpadded_vocab_size,
-                config.hidden_size,
-                org_num_embeddings=config.vocab_size,
-                padding_size=DEFAULT_VOCAB_PADDING_SIZE,
-            )
-            self.lm_head_weight = self.lm_head.weight
+        self.lm_head = ParallelLMHead(
+            self.unpadded_vocab_size,
+            config.hidden_size,
+            org_num_embeddings=config.vocab_size,
+            padding_size=DEFAULT_VOCAB_PADDING_SIZE,
+        )
         self.sampler = Sampler(self.unpadded_vocab_size, config.vocab_size)
 
     def forward(
@@ -272,7 +267,7 @@ class Starcoder2ForCausalLM(nn.Module):
         hidden_states: Optional[torch.Tensor],
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head_weight, hidden_states,
+        next_tokens = self.sampler(self.lm_head, hidden_states,
                                    sampling_metadata)
         return next_tokens
 
@@ -293,6 +288,15 @@ class Starcoder2ForCausalLM(nn.Module):
                 model_name_or_path, cache_dir, load_format, revision):
             if "rotary_emb.inv_freq" in name:
                 continue
+
+            if "embed_tokens" in name:
+                # Copy word embedding to lm_head
+                head_name = name.replace("model.embed_tokens", "lm_head")
+                if head_name in params_dict:
+                    lm_head_param = params_dict[head_name]
+                    weight_loader = getattr(lm_head_param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(lm_head_param, loaded_weight)
 
             for (param_name, weight_name, shard_id) in stacked_params_mapping:
                 if weight_name not in name:

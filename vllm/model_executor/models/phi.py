@@ -283,7 +283,7 @@ class PhiForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(self.lm_head(hidden_states),
+        next_tokens = self.sampler(self.lm_head, hidden_states,
                                    sampling_metadata)
         return next_tokens
 
