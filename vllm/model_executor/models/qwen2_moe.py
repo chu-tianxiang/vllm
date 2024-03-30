@@ -24,6 +24,7 @@
 """Inference-only Qwen2MoE model compatible with HuggingFace weights."""
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -31,13 +32,11 @@ from transformers import PretrainedConfig
 
 from vllm.attention import Attention, AttentionMetadata
 from vllm.model_executor.layers.activation import SiluAndMul
-from vllm.model_executor.layers.fused_moe import fused_moe
+from vllm.model_executor.layers.fused_moe import fused_topk
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (LinearMethodBase,
-                                               MergedColumnParallelLinear,
-                                               QKVParallelLinear,
-                                               ReplicatedLinear,
-                                               RowParallelLinear)
+from vllm.model_executor.layers.linear import (
+    LinearMethodBase, MergedColumnParallelLinear, QKVParallelLinear,
+    ReplicatedLinear, RowParallelLinear, UnquantizedLinearMethod)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
@@ -85,7 +84,50 @@ class Qwen2MoeMLP(nn.Module):
         return x
 
 
+class Qwen2MoeExpertMLP(nn.Module):
+
+    def __init__(
+        self,
+        hidden_size: int,
+        intermediate_size: int,
+        linear_method: Optional[LinearMethodBase] = None,
+    ) -> None:
+        super().__init__()
+        self.ffn_dim = intermediate_size
+        self.hidden_dim = hidden_size
+
+        self.gate_proj = ReplicatedLinear(self.hidden_dim,
+                                          self.ffn_dim,
+                                          bias=False,
+                                          linear_method=linear_method)
+        self.down_proj = ReplicatedLinear(self.ffn_dim,
+                                          self.hidden_dim,
+                                          bias=False,
+                                          linear_method=linear_method)
+        self.up_proj = ReplicatedLinear(self.hidden_dim,
+                                        self.ffn_dim,
+                                        bias=False,
+                                        linear_method=linear_method)
+
+        self.act_fn = nn.SiLU()
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        gate_out, _ = self.gate_proj(hidden_states)
+        gate_out = self.act_fn(gate_out)
+        up_out, _ = self.up_proj(hidden_states)
+        current_hidden_states = gate_out * up_out
+        current_hidden_states, _ = self.down_proj(current_hidden_states)
+        return current_hidden_states
+
+
 class Qwen2MoeSparseMoeBlock(nn.Module):
+    """A tensor-parallel MoE implementation for Qwen2Moe that shards each expert
+    across all ranks.
+
+    Each expert's weights are sharded across all ranks and a fused MoE
+    kernel is used for the forward pass, and finally we reduce the outputs
+    across ranks.
+    """
 
     def __init__(
         self,
@@ -93,6 +135,8 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
+        self.rank = get_tensor_model_parallel_rank()
+        self.tp_size = get_tensor_model_parallel_world_size()
         self.config = config
         self.rank = get_tensor_model_parallel_rank()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -103,15 +147,9 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
                 f"Tensor parallel size {self.tp_size} is greater than "
                 f"the number of experts {self.n_routed_experts}.")
 
-        self.experts = nn.ModuleList([
-            Qwen2MoeMLP(hidden_size=config.hidden_size,
-                        intermediate_size=config.moe_intermediate_size,
-                        hidden_act=config.hidden_act,
-                        linear_method=linear_method,
-                        reduce_results=False)
-            for idx in range(self.n_routed_experts)
-        ])
-        self.pack_params()
+        self.linear_method = linear_method
+        if self.linear_method is None:
+            self.linear_method = UnquantizedLinearMethod()
 
         self.gate = ReplicatedLinear(config.hidden_size,
                                      self.n_routed_experts,
@@ -131,24 +169,34 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
                                                   1,
                                                   bias=False)
 
-    def pack_params(self):
-        w1 = []
-        w2 = []
-        for expert in self.experts:
-            w1.append(expert.gate_up_proj.weight)
-            w2.append(expert.down_proj.weight)
-        self.w1 = torch._utils._flatten_dense_tensors(w1)
-        w1s = torch._utils._unflatten_dense_tensors(self.w1, w1)
-        for data, param in zip(w1s, w1):
-            param.data = data
-        self.w1 = self.w1.view(len(w1), *w1s[0].shape)
+        if not isinstance(
+                self.linear_method, UnquantizedLinearMethod
+        ) and not self.linear_method.quant_config.support_fused_moe():
+            # Split experts equally between ranks
+            self.expert_indicies = np.array_split(range(
+                self.n_routed_experts), self.tp_size)[self.rank].tolist()
+            if not self.expert_indicies:
+                raise ValueError(
+                    f"Rank {self.rank} has no experts assigned to it.")
 
-        self.w2 = torch._utils._flatten_dense_tensors(w2)
-        w2s = torch._utils._unflatten_dense_tensors(self.w2, w2)
-        for data, param in zip(w2s, w2):
-            param.data = data
-
-        self.w2 = self.w2.view(len(w2), *w2s[0].shape)
+            self.experts = nn.ModuleList([
+                Qwen2MoeExpertMLP(config.hidden_size,
+                                  config.moe_intermediate_size,
+                                  linear_method=linear_method)
+                if idx in self.expert_indicies else None
+                for idx in range(self.n_routed_experts)
+            ])
+        else:
+            self.w1 = MergedColumnParallelLinear(
+                config.hidden_size, [config.moe_intermediate_size] * 2,
+                bias=False,
+                linear_method=linear_method,
+                num_experts=self.n_routed_experts)
+            self.w2 = RowParallelLinear(config.moe_intermediate_size,
+                                        config.hidden_size,
+                                        bias=False,
+                                        linear_method=linear_method,
+                                        num_experts=self.n_routed_experts)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
@@ -162,18 +210,43 @@ class Qwen2MoeSparseMoeBlock(nn.Module):
 
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
-        final_hidden_states = fused_moe(hidden_states,
-                                        self.w1,
-                                        self.w2,
-                                        router_logits,
-                                        self.top_k,
-                                        renormalize=self.config.norm_topk_prob,
-                                        inplace=True)
+
+        if not isinstance(
+                self.linear_method, UnquantizedLinearMethod
+        ) and not self.linear_method.quant_config.support_fused_moe():
+            routing_weights, selected_experts = fused_topk(
+                router_logits,
+                self.top_k,
+                renormalize=self.config.norm_topk_prob)
+            final_hidden_states = None
+            for expert_idx in self.expert_indicies:
+                expert_layer = self.experts[expert_idx]
+                expert_mask = (selected_experts == expert_idx)
+                expert_weights = (routing_weights * expert_mask).sum(
+                    dim=-1, keepdim=True)
+
+                current_hidden_states = expert_layer(hidden_states).mul_(
+                    expert_weights)
+                if final_hidden_states is None:
+                    final_hidden_states = current_hidden_states
+                else:
+                    final_hidden_states.add_(current_hidden_states)
+        else:
+            final_hidden_states = self.linear_method.apply_moe_weights(
+                self.w1.linear_weights,
+                self.w2.linear_weights,
+                hidden_states,
+                router_logits,
+                self.top_k,
+                renormalize=self.config.norm_topk_prob,
+            )
 
         if shared_output is not None:
             final_hidden_states = final_hidden_states + shared_output
-        final_hidden_states = tensor_model_parallel_all_reduce(
-            final_hidden_states)
+
+        if self.tp_size > 1:
+            final_hidden_states = tensor_model_parallel_all_reduce(
+                final_hidden_states)
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
@@ -335,11 +408,9 @@ class Qwen2MoeModel(nn.Module):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_tokens = VocabParallelEmbedding(config.vocab_size,
+                                                   config.hidden_size,
+                                                   linear_method=linear_method)
         self.layers = nn.ModuleList([
             Qwen2MoeDecoderLayer(config,
                                  layer_idx,
@@ -416,9 +487,22 @@ class Qwen2MoeForCausalLM(nn.Module):
             ("qkv_proj", "q_proj", "q"),
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v"),
-            ("gate_up_proj", "gate_proj", 0),
-            ("gate_up_proj", "up_proj", 1),
+            ("mlp.gate_up_proj", "mlp.gate_proj", 0),
+            ("mlp.gate_up_proj", "mlp.up_proj", 1),
+            ("shared_expert.gate_up_proj", "shared_expert.gate_proj", 0),
+            ("shared_expert.gate_up_proj", "shared_expert.up_proj", 1),
         ]
+
+        expert_params_mapping = [
+            # (param_name, weight_name, shard_id, expert_id)
+            ("w1" if weight_name in ["gate_proj", "up_proj"] else "w2",
+             f"experts.{expert_id}.{weight_name}", shard_id, expert_id)
+            for expert_id in range(self.config.num_experts)
+            for weight_name, shard_id in [("gate_proj",
+                                           0), ("up_proj",
+                                                1), ("down_proj", None)]
+        ] if self.linear_method is None or (
+            self.linear_method.quant_config.support_fused_moe()) else []
 
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
@@ -446,14 +530,35 @@ class Qwen2MoeForCausalLM(nn.Module):
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
-                # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
-                # Skip experts that are not assigned to this worker.
-                if (("mlp.experts." in name or "mlp.shared_expert." in name)
-                        and name not in params_dict):
-                    continue
-                param = params_dict[name]
-                weight_loader = getattr(param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(param, loaded_weight)
+                for (param_name, weight_name, shard_id,
+                     expert_id) in expert_params_mapping:
+                    if weight_name not in name:
+                        continue
+                    name = name.replace(weight_name, param_name)
+                    if name.endswith(".bias") and name not in params_dict:
+                        continue
+                    param = params_dict[name]
+                    weight_loader = param.weight_loader
+                    if shard_id is None:
+                        weight_loader(param,
+                                      loaded_weight,
+                                      expert_id=expert_id)
+                    else:
+                        weight_loader(param,
+                                      loaded_weight,
+                                      shard_id,
+                                      expert_id=expert_id)
+                    break
+                else:
+                    # Skip loading extra bias for GPTQ models.
+                    if name.endswith(".bias") and name not in params_dict:
+                        continue
+                    # Skip experts that are not assigned to this worker.
+                    if (("mlp.experts." in name
+                         or "mlp.shared_expert." in name)
+                            and name not in params_dict):
+                        continue
+                    param = params_dict[name]
+                    weight_loader = getattr(param, "weight_loader",
+                                            default_weight_loader)
+                    weight_loader(param, loaded_weight)

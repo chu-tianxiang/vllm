@@ -54,16 +54,17 @@ class StablelmMLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.gate_proj = ColumnParallelLinear(
-                config.hidden_size, config.intermediate_size,
-                bias=False,
-                linear_method=linear_method)
-            self.up_proj = ColumnParallelLinear(
-                config.hidden_size, config.intermediate_size,
-                bias=False,
-                linear_method=linear_method)
+            self.gate_proj = ColumnParallelLinear(config.hidden_size,
+                                                  config.intermediate_size,
+                                                  bias=False,
+                                                  linear_method=linear_method)
+            self.up_proj = ColumnParallelLinear(config.hidden_size,
+                                                config.intermediate_size,
+                                                bias=False,
+                                                linear_method=linear_method)
         else:
             self.merge_weight = True
             self.gate_up_proj = MergedColumnParallelLinear(
@@ -124,20 +125,24 @@ class StablelmAttention(nn.Module):
                              f"(got `hidden_size`: {self.hidden_size}"
                              f" and `num_heads`: {self.num_heads}).")
 
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.q_proj = ColumnParallelLinear(
-                self.hidden_size, self.total_num_heads * self.head_dim,
-                bias=self.qkv_bias,
-                linear_method=linear_method)
-            self.k_proj = ColumnParallelLinear(
-                self.hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=self.qkv_bias,
-                linear_method=linear_method)
-            self.v_proj = ColumnParallelLinear(
-                self.hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=self.qkv_bias,
-                linear_method=linear_method)
+            self.q_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.total_num_heads *
+                                               self.head_dim,
+                                               bias=self.qkv_bias,
+                                               linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=self.qkv_bias,
+                                               linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=self.qkv_bias,
+                                               linear_method=linear_method)
         else:
             self.merge_weight = True
             self.qkv_proj = QKVParallelLinear(
@@ -234,11 +239,9 @@ class StableLMEpochModel(nn.Module):
                  config: PretrainedConfig,
                  linear_method: Optional[LinearMethodBase] = None) -> None:
         super().__init__()
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_tokens = VocabParallelEmbedding(config.vocab_size,
+                                                   config.hidden_size,
+                                                   linear_method=linear_method)
         self.layers = nn.ModuleList([
             StablelmDecoderLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
@@ -278,7 +281,8 @@ class StablelmForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.model = StableLMEpochModel(config, linear_method)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
                                       linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
@@ -321,11 +325,13 @@ class StablelmForCausalLM(nn.Module):
             ("gate_up_proj", "gate_proj", 0),
             ("gate_up_proj", "up_proj", 1),
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
             if ("rotary_emb.cos_cached" in name

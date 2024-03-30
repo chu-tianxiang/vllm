@@ -32,13 +32,10 @@ from vllm.attention import Attention, AttentionMetadata
 from vllm.config import LoRAConfig
 from vllm.model_executor.layers.fused_moe import fused_topk
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (LinearMethodBase,
-                                               MergedColumnParallelLinear,
-                                               UnquantizedLinearMethod,
-                                               QKVParallelLinear,
-                                               ReplicatedLinear,
-                                               RowParallelLinear,
-                                               ColumnParallelLinear)
+from vllm.model_executor.layers.linear import (
+    ColumnParallelLinear, LinearMethodBase, MergedColumnParallelLinear,
+    QKVParallelLinear, ReplicatedLinear, RowParallelLinear,
+    UnquantizedLinearMethod)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
@@ -237,20 +234,24 @@ class MixtralAttention(nn.Module):
         self.rope_theta = rope_theta
         self.sliding_window = sliding_window
 
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.q_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_heads * self.head_dim,
-                bias=False,
-                linear_method=linear_method)
-            self.k_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=False,
-                linear_method=linear_method)
-            self.v_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=False,
-                linear_method=linear_method)
+            self.q_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_heads *
+                                               self.head_dim,
+                                               bias=False,
+                                               linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=False,
+                                               linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=False,
+                                               linear_method=linear_method)
         else:
             self.merge_weight = True
             self.qkv_proj = QKVParallelLinear(
@@ -494,7 +495,8 @@ class MixtralForCausalLM(nn.Module):
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v"),
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
 
         expert_params_mapping = [

@@ -323,10 +323,7 @@ class FalconModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size,
-            self.embed_dim,
-            linear_method=linear_method
-        )
+            config.vocab_size, self.embed_dim, linear_method=linear_method)
 
         # Transformer blocks
         self.h = nn.ModuleList([
@@ -368,11 +365,9 @@ class FalconForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.transformer = FalconModel(config, linear_method)
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
+                                      linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
 
@@ -420,7 +415,8 @@ class FalconForCausalLM(nn.Module):
         num_query_heads_per_kv_head = total_num_heads // total_num_kv_heads
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if name == "lm_head.weight":
                 # Falcon uses tied embeddings.
                 continue

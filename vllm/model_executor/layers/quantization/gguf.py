@@ -8,10 +8,9 @@ from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
 
-
 GGML_QUANT_SIZES = {
-    0:  (1, 4),
-    1:  (1, 2),
+    0: (1, 4),
+    1: (1, 2),
     2: (32, 2 + 16),
     3: (32, 2 + 2 + 16),
     6: (32, 2 + 4 + 16),
@@ -27,6 +26,7 @@ GGML_QUANT_SIZES = {
     16: (256, 2 + 256 // 4),
     17: (256, 2 + 256 // 4 + 256 // 32),
 }
+
 
 class GGUFConfig(QuantizationConfig):
     """Config class for GGUF"""
@@ -82,15 +82,12 @@ class GGUFLinearMethod(LinearMethodBase):
                        output_size: int,
                        params_dtype: torch.dtype) -> Dict[str, Any]:
         # The type of weight is unknown until load state dict
-        weight = torch.nn.parameter.UninitializedParameter(
-            requires_grad=False
-        )
+        weight = torch.nn.parameter.UninitializedParameter(requires_grad=False)
         # No need for pack_factor because we don't fuse qkv layers anyway.
-        set_weight_attrs(
-            weight, {
-                "input_dim": 1,
-                "output_dim": 0,
-            })
+        set_weight_attrs(weight, {
+            "input_dim": 1,
+            "output_dim": 0,
+        })
         weight_type = Parameter(
             torch.tensor((1), dtype=torch.int, device="cuda"),
             requires_grad=False,
@@ -110,7 +107,8 @@ class GGUFLinearMethod(LinearMethodBase):
             # Check tensor parallel shape here on first pass
             block_size = GGML_QUANT_SIZES[weights["weight_type"]][1]
             if weights["weight"].shape[1] % block_size != 0:
-                raise ValueError("Size is not aligned with the quantized weight shape.")
+                raise ValueError(
+                    "Size is not aligned with the quantized weight shape.")
 
         weight_type = weights["weight_type"]
         weight = weights["weight"]
@@ -121,11 +119,14 @@ class GGUFLinearMethod(LinearMethodBase):
 
         xshape = x.view(-1, x.shape[-1])
         if xshape.shape[0] == 1:
-            out = ops.ggml_mul_mat_vec_a8(weight, reshaped_x, weight_type, outfeatures)
+            out = ops.ggml_mul_mat_vec_a8(weight, reshaped_x, weight_type,
+                                          outfeatures)
         elif xshape.shape[0] < 8 and weight_type < 16:
-            out = ops.ggml_mul_mat_a8(weight, reshaped_x, weight_type, outfeatures)
+            out = ops.ggml_mul_mat_a8(weight, reshaped_x, weight_type,
+                                      outfeatures)
         else:
-            weight = ops.ggml_dequantize(weight, weight_type, outfeatures, infeatures)
+            weight = ops.ggml_dequantize(weight, weight_type, outfeatures,
+                                         infeatures)
             out = reshaped_x @ weight.T
 
         if bias is not None:
@@ -144,9 +145,11 @@ class GGUFLinearMethod(LinearMethodBase):
         if weight_type < 2:
             return torch.embedding(weight.view(vocab_size, -1), x)
         x_flat = x.flatten()
-        quant = torch.index_select(weight.view(vocab_size, -1), dim=0, index=x_flat)
-        dequant = ops.ggml_dequantize(quant, weight_type,
-                                      hidden_size, x_flat.shape[0])
+        quant = torch.index_select(weight.view(vocab_size, -1),
+                                   dim=0,
+                                   index=x_flat)
+        dequant = ops.ggml_dequantize(quant, weight_type, hidden_size,
+                                      x_flat.shape[0])
         return dequant.view(*x.shape, hidden_size)
 
     def apply_moe_weights(self, w1: Dict[str,

@@ -15,7 +15,6 @@ from safetensors.torch import load_file, safe_open, save_file
 from tqdm.auto import tqdm
 from transformers import PretrainedConfig
 
-
 from vllm.config import ModelConfig
 from vllm.gguf_utils import convert_gguf_to_state_dict
 from vllm.logger import init_logger

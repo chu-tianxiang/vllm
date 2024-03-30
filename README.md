@@ -18,7 +18,7 @@ Easy, fast, and cheap LLM serving for everyone
 
 GPTQ support has been merged into vLLM, please use the official vLLM build instead.
 
-This repo currently supports a varities of other quantization methods including:
+This repo currently supports a varieties of other quantization methods including:
 
 * GGUF
 
@@ -29,7 +29,7 @@ python -m vllm.entrypoints.api_server --model miqu-1-70b.q2_K.gguf
 
 * EXL2
 
-Only support `tensor_parallel_size=1`.
+Only support `tensor_parallel_size=1`. Llama, Mixtral, Qwen1.5, Gemma, StarCoder2, Orion and Command-r are tested.
 ```
 python -m vllm.entrypoints.api_server --model LoneStriker/Qwen1.5-14B-Chat-3.0bpw-h6-exl2 --quantization exl2 --dtype half
 ```

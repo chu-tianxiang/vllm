@@ -165,7 +165,9 @@ class ModelConfig:
         self.tokenizer_mode = tokenizer_mode
 
     def _verify_quantization(self) -> None:
-        supported_quantization = ["awq", "exl2", "gguf", "gptq", "quip", "squeezellm"]
+        supported_quantization = [
+            "awq", "exl2", "gguf", "gptq", "quip", "squeezellm"
+        ]
         rocm_not_supported_quantization = ["awq", "marlin", "quip"]
         if self.quantization is not None:
             self.quantization = self.quantization.lower()
@@ -174,7 +176,8 @@ class ModelConfig:
             if self.quantization is None:
                 self.quantization = "gguf"
             elif self.quantization != "gguf":
-                raise ValueError(f"GGUF file cannot be used in ({self.quantization}).")
+                raise ValueError(
+                    f"GGUF file cannot be used in ({self.quantization}).")
         # Parse quantization method from the HF model config, if available.
         hf_quant_config = getattr(self.hf_config, "quantization_config", None)
         if hf_quant_config is not None:

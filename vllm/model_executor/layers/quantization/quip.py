@@ -22,18 +22,13 @@ class QuipConfig(QuantizationConfig):
     Reference: https://cornell-relaxml.github.io/quip-sharp/
     """
 
-    def __init__(
-        self,
-        codebook: int,
-        use_rand: bool
-    ) -> None:
+    def __init__(self, codebook: int, use_rand: bool) -> None:
         self.codebook = codebook
         self.use_rand = use_rand
 
         if self.codebook != "E8P12":
-            raise ValueError(
-                "Currently, only E8P12 is supported for "
-                f"Quip, but got {self.codebook}.")
+            raise ValueError("Currently, only E8P12 is supported for "
+                             f"Quip, but got {self.codebook}.")
 
     def __repr__(self) -> str:
         return (f"QuipConfig(codebook={self.codebook}, "
@@ -102,8 +97,10 @@ class QuipLinearMethod(LinearMethodBase):
             raise ValueError(
                 "Currently Quip doesn't support tensor parallel yet")
 
-        had_left, K_left, q_in_features = get_hadK(input_size, self.quant_config.use_rand)
-        had_right, K_right, q_out_features = get_hadK(output_size, self.quant_config.use_rand)
+        had_left, K_left, q_in_features = get_hadK(input_size,
+                                                   self.quant_config.use_rand)
+        had_right, K_right, q_out_features = get_hadK(
+            output_size, self.quant_config.use_rand)
         weights = {
             "K_left": K_left,
             "K_right": K_right,
@@ -126,8 +123,7 @@ class QuipLinearMethod(LinearMethodBase):
             torch.empty(q_out_features,
                         q_in_features // self.pack,
                         device="cuda",
-                        dtype=self.idx_dtype
-                        ),
+                        dtype=self.idx_dtype),
             requires_grad=False,
         )
         set_weight_attrs(Qidxs, {"ignore_warning": True})
@@ -137,18 +133,20 @@ class QuipLinearMethod(LinearMethodBase):
         )
         set_weight_attrs(Wscale, {"ignore_warning": True})
         SU = Parameter(
-            torch.ones(input_size,
-                        device="cuda",
-                        dtype=params_dtype,
-                        ),
+            torch.ones(
+                input_size,
+                device="cuda",
+                dtype=params_dtype,
+            ),
             requires_grad=False,
         )
         set_weight_attrs(SU, {"ignore_warning": True})
         SV = Parameter(
-            torch.ones(output_size,
-                        device="cuda",
-                        dtype=params_dtype,
-                        ),
+            torch.ones(
+                output_size,
+                device="cuda",
+                dtype=params_dtype,
+            ),
             requires_grad=False,
         )
         set_weight_attrs(SV, {"ignore_warning": True})
@@ -177,26 +175,27 @@ class QuipLinearMethod(LinearMethodBase):
 
         if "SU" in weights:
             reshaped_x = reshaped_x * weights["SU"]
-        reshaped_x = matmul_hadUt_cuda(reshaped_x, weights.get("had_left", None),
-                                       weights["K_left"],
+        reshaped_x = matmul_hadUt_cuda(reshaped_x,
+                                       weights.get("had_left",
+                                                   None), weights["K_left"],
                                        weights["q_in_features"],
                                        weights["Wscale"])
 
         m, n = weights["Qidxs"].shape
         if reshaped_x.size(0) < 32:
-            out = ops.quip_gemv(reshaped_x,
-                                weights["Qidxs"],
+            out = ops.quip_gemv(reshaped_x, weights["Qidxs"],
                                 self.grid_packed_abs)
         else:
-            W_decompressed = torch.empty(
-                m, n * 8, dtype=torch.float16, device=x.device
-            )
-            ops.quip_decompress(
-                weights["Qidxs"], self.grid_packed_abs, W_decompressed
-            )
+            W_decompressed = torch.empty(m,
+                                         n * 8,
+                                         dtype=torch.float16,
+                                         device=x.device)
+            ops.quip_decompress(weights["Qidxs"], self.grid_packed_abs,
+                                W_decompressed)
             out = reshaped_x @ W_decompressed.T
 
-        out = matmul_hadU_cuda(out, weights.get("had_right", None), weights["K_right"],
+        out = matmul_hadU_cuda(out, weights.get("had_right",
+                                                None), weights["K_right"],
                                weights["q_out_features"])[..., :out_dim]
         if "SV" in weights:
             out = out * weights["SV"]

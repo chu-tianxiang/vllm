@@ -60,16 +60,17 @@ class Qwen2MLP(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
         super().__init__()
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.gate_proj = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
-            self.up_proj = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
+            self.gate_proj = ColumnParallelLinear(hidden_size,
+                                                  intermediate_size,
+                                                  bias=False,
+                                                  linear_method=linear_method)
+            self.up_proj = ColumnParallelLinear(hidden_size,
+                                                intermediate_size,
+                                                bias=False,
+                                                linear_method=linear_method)
         else:
             self.merge_weight = True
             self.gate_up_proj = MergedColumnParallelLinear(
@@ -131,20 +132,24 @@ class Qwen2Attention(nn.Module):
         self.rope_theta = rope_theta
         self.sliding_window = sliding_window if use_sliding_window else None
 
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.q_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_heads * self.head_dim,
-                bias=True,
-                linear_method=linear_method)
-            self.k_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=True,
-                linear_method=linear_method)
-            self.v_proj = ColumnParallelLinear(
-                hidden_size, self.total_num_kv_heads * self.head_dim,
-                bias=True,
-                linear_method=linear_method)
+            self.q_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_heads *
+                                               self.head_dim,
+                                               bias=True,
+                                               linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=True,
+                                               linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(hidden_size,
+                                               self.total_num_kv_heads *
+                                               self.head_dim,
+                                               bias=True,
+                                               linear_method=linear_method)
         else:
             self.merge_weight = True
             self.qkv_proj = QKVParallelLinear(
@@ -384,11 +389,13 @@ class Qwen2ForCausalLM(nn.Module):
             ("gate_up_proj", "gate_proj", 0),
             ("gate_up_proj", "up_proj", 1),
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
             for (param_name, weight_name, shard_id) in stacked_params_mapping:

@@ -33,8 +33,8 @@ from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import fused_topk
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
-    UnquantizedLinearMethod, LinearMethodBase, MergedColumnParallelLinear,
-    ReplicatedLinear, QKVParallelLinear, RowParallelLinear)
+    LinearMethodBase, MergedColumnParallelLinear, QKVParallelLinear,
+    ReplicatedLinear, RowParallelLinear, UnquantizedLinearMethod)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
@@ -386,11 +386,9 @@ class DeepseekModel(nn.Module):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_tokens = VocabParallelEmbedding(config.vocab_size,
+                                                   config.hidden_size,
+                                                   linear_method=linear_method)
         self.layers = nn.ModuleList([
             DeepseekDecoderLayer(config,
                                  layer_idx,

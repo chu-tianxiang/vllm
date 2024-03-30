@@ -27,8 +27,10 @@ def make_group_map(q_groups, num_qrows):
             group_map += [rows - j]
     return torch.tensor(group_map, dtype=torch.short, device=q_groups.device)
 
+
 class Exl2Config(QuantizationConfig):
     """Config class for Exl2."""
+
     def __repr__(self) -> str:
         return f"Exl2Config()"
 
@@ -89,12 +91,9 @@ class Exl2LinearMethod(LinearMethodBase):
         # The shape of weight is unknown until load state dict
         # q_groups, q_invperm, q_scale, q_scale_max, q_weight, q_groups
         state_dict = {"exllama_state": 0}
-        qweight = torch.nn.parameter.UninitializedParameter(requires_grad=False)
-        set_weight_attrs(
-            qweight, {
-                "output_dim": 1,
-                "ignore_warning": True
-            })
+        qweight = torch.nn.parameter.UninitializedParameter(
+            requires_grad=False)
+        set_weight_attrs(qweight, {"output_dim": 1, "ignore_warning": True})
         state_dict["q_weight"] = qweight
         qscale = torch.nn.parameter.UninitializedParameter(requires_grad=False)
         set_weight_attrs(
@@ -107,8 +106,7 @@ class Exl2LinearMethod(LinearMethodBase):
         state_dict["q_scale"] = qscale
         for name in ["q_groups", "q_invperm", "q_scale_max"]:
             fake_weight = torch.nn.parameter.UninitializedParameter(
-                requires_grad=False
-            )
+                requires_grad=False)
             set_weight_attrs(fake_weight, {"ignore_warning": True})
             state_dict[name] = fake_weight
         return state_dict
@@ -124,9 +122,11 @@ class Exl2LinearMethod(LinearMethodBase):
             weights["q_scale_max"] /= 256
             weights["q_invperm"] = weights["q_invperm"].short()
             if "q_perm" not in weights:
-                weights["q_perm"] = torch.argsort(weights["q_invperm"]).to(torch.short)
+                weights["q_perm"] = torch.argsort(weights["q_invperm"]).to(
+                    torch.short)
             if "q_group_map" not in weights:
-                weights["q_group_map"] = make_group_map(weights["q_groups"], weights["q_weight"].shape[0])
+                weights["q_group_map"] = make_group_map(
+                    weights["q_groups"], weights["q_weight"].shape[0])
             weights["q_matrix"] = ops.exl2_make_q_matrix(
                 weights["q_weight"],
                 weights["q_perm"],

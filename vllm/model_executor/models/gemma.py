@@ -26,12 +26,9 @@ from vllm.config import LoRAConfig
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import GeluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (LinearMethodBase,
-                                               MergedColumnParallelLinear,
-                                               QKVParallelLinear,
-                                               RowParallelLinear,
-                                               ColumnParallelLinear,
-                                               ReplicatedLinear)
+from vllm.model_executor.layers.linear import (
+    LinearMethodBase, MergedColumnParallelLinear, QKVParallelLinear,
+    RowParallelLinear, ColumnParallelLinear, ReplicatedLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.sampler import Sampler
@@ -84,16 +81,17 @@ class GemmaMLP(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ) -> None:
         super().__init__()
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.gate_proj = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
-            self.up_proj = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
+            self.gate_proj = ColumnParallelLinear(hidden_size,
+                                                  intermediate_size,
+                                                  bias=False,
+                                                  linear_method=linear_method)
+            self.up_proj = ColumnParallelLinear(hidden_size,
+                                                intermediate_size,
+                                                bias=False,
+                                                linear_method=linear_method)
         else:
             self.merge_weight = True
             self.gate_up_proj = MergedColumnParallelLinear(
@@ -150,21 +148,22 @@ class GemmaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
 
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
             kv_class = ReplicatedLinear if self.total_num_kv_heads == 1 else ColumnParallelLinear
-            self.q_proj = ColumnParallelLinear(
-                hidden_size, self.q_size,
-                bias=False,
-                linear_method=linear_method)
-            self.k_proj = kv_class(
-                hidden_size, self.kv_size,
-                bias=False,
-                linear_method=linear_method)
-            self.v_proj = kv_class(
-                hidden_size, self.kv_size,
-                bias=False,
-                linear_method=linear_method)
+            self.q_proj = ColumnParallelLinear(hidden_size,
+                                               self.q_size,
+                                               bias=False,
+                                               linear_method=linear_method)
+            self.k_proj = kv_class(hidden_size,
+                                   self.kv_size,
+                                   bias=False,
+                                   linear_method=linear_method)
+            self.v_proj = kv_class(hidden_size,
+                                   self.kv_size,
+                                   bias=False,
+                                   linear_method=linear_method)
         else:
             self.merge_weight = True
             self.qkv_proj = QKVParallelLinear(
@@ -283,11 +282,9 @@ class GemmaModel(nn.Module):
         super().__init__()
         self.config = config
 
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_tokens = VocabParallelEmbedding(config.vocab_size,
+                                                   config.hidden_size,
+                                                   linear_method=linear_method)
         self.layers = nn.ModuleList([
             GemmaDecoderLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
@@ -360,7 +357,8 @@ class GemmaForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.model = GemmaModel(config, linear_method)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
                                       linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
@@ -379,8 +377,8 @@ class GemmaForCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        logits = self.logits_processor(self.lm_head,
-                                       hidden_states, sampling_metadata)
+        logits = self.logits_processor(self.lm_head, hidden_states,
+                                       sampling_metadata)
         return logits
 
     def sample(
@@ -404,12 +402,14 @@ class GemmaForCausalLM(nn.Module):
             ("gate_up_proj", "gate_proj", 0),
             ("gate_up_proj", "up_proj", 1),
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
         loaded_params = set()
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
             if "embed_tokens" in name:

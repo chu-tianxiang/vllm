@@ -2,7 +2,6 @@ import os
 import tempfile
 from typing import List, Optional, Tuple, Union
 
-
 from transformers import (AutoTokenizer, PreTrainedTokenizer,
                           PreTrainedTokenizerFast, LlamaTokenizer)
 from transformers.convert_slow_tokenizer import import_protobuf

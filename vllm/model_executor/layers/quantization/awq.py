@@ -4,12 +4,13 @@ import torch
 from torch.nn.parameter import Parameter
 
 from vllm._C import ops
-from vllm.model_executor.layers.fused_moe import (moe_align_block_size,
-                                                  fused_moe, fused_topk)
+from vllm.model_executor.layers.fused_moe import (fused_moe, fused_topk,
+                                                  moe_align_block_size)
 from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
+
 
 def pemute_weight(scale, qzeros):
     scale_perm = [i + 8 * j for i in range(8) for j in range(8)]
@@ -17,8 +18,10 @@ def pemute_weight(scale, qzeros):
     # unpack and permute qweight
     zeros = torch.bitwise_right_shift(
         torch.unsqueeze(qzeros, -1),
-        torch.tensor(list(range(0, 32, 4)), dtype=torch.int32, device=qzeros.device),
-        ).bitwise_and(15)
+        torch.tensor(list(range(0, 32, 4)),
+                     dtype=torch.int32,
+                     device=qzeros.device),
+    ).bitwise_and(15)
     # unpermute awq
     # todo: merge awq unpermute and marlin permute
     zeros = zeros[..., [0, 4, 1, 5, 2, 6, 3, 7]].view(zeros.shape[0], -1)
@@ -26,7 +29,8 @@ def pemute_weight(scale, qzeros):
     zeros = zeros.reshape((-1, len(scale_perm)))[:, scale_perm]
     scale = scale.reshape((-1, dim)).contiguous()
     zeros = zeros.reshape((-1, dim)).contiguous()
-    return scale, - zeros * scale
+    return scale, -zeros * scale
+
 
 class AWQConfig(QuantizationConfig):
     """Config class for AWQ.
@@ -105,7 +109,7 @@ class AWQLinearMethod(LinearMethodBase):
 
     def __init__(self, quant_config: AWQConfig):
         self.quant_config = quant_config
-        self.workspace = torch.zeros((512,), dtype=torch.int, device="cuda")
+        self.workspace = torch.zeros((512, ), dtype=torch.int, device="cuda")
 
     def fit_marlin(self):
         return self.quant_config.group_size == 128
@@ -179,7 +183,7 @@ class AWQLinearMethod(LinearMethodBase):
                       x: torch.Tensor,
                       bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         if weights["marlin_state"] == 0:
-            weights["qweight"] = ops.awq_to_marlin(weights["qweight"],)
+            weights["qweight"] = ops.awq_to_marlin(weights["qweight"], )
             weights["scales"], weights["qzeros"] = pemute_weight(
                 weights["scales"], weights["qzeros"])
             weights["marlin_state"] = 1
@@ -193,8 +197,10 @@ class AWQLinearMethod(LinearMethodBase):
 
         if weights["marlin_state"] == 1:
             output = torch.empty(out_shape, dtype=x.dtype, device=x.device)
-            ops.marlin_gemm_zero(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
-                                 weights["scales"], weights["qzeros"], self.workspace)
+            ops.marlin_gemm_zero(reshaped_x, weights["qweight"],
+                                 output.view(-1, output.shape[-1]),
+                                 weights["scales"], weights["qzeros"],
+                                 self.workspace)
             return output.view(out_shape)
 
         # num_tokens >= threshold

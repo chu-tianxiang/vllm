@@ -222,10 +222,7 @@ class BloomModel(nn.Module):
 
         # Embedding + LN Embedding
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size,
-            self.embed_dim,
-            linear_method=linear_method
-        )
+            config.vocab_size, self.embed_dim, linear_method=linear_method)
         self.word_embeddings_layernorm = nn.LayerNorm(
             self.embed_dim, eps=config.layer_norm_epsilon)
 
@@ -271,7 +268,8 @@ class BloomForCausalLM(nn.Module):
         self.linear_method = linear_method
         self.transformer = BloomModel(config, linear_method)
         # self.lm_head_weight = self.transformer.word_embeddings.weight
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
                                       linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
@@ -308,7 +306,8 @@ class BloomForCausalLM(nn.Module):
                      revision: Optional[str] = None):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "lm_head" in name and name not in params_dict:
                 continue
             if not name.startswith("transformer.") and "lm_head" not in name:
@@ -317,7 +316,8 @@ class BloomForCausalLM(nn.Module):
 
             if "word_embeddings" in name:
                 # Copy word embedding to lm_head
-                head_name = name.replace("transformer.word_embeddings", "lm_head")
+                head_name = name.replace("transformer.word_embeddings",
+                                         "lm_head")
                 if head_name in params_dict:
                     lm_head_param = params_dict[head_name]
                     weight_loader = getattr(lm_head_param, "weight_loader",

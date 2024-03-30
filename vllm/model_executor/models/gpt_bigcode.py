@@ -194,7 +194,8 @@ class GPTBigCodeModel(nn.Module):
 
         self.embed_dim = config.hidden_size
 
-        self.wte = VocabParallelEmbedding(config.vocab_size, self.embed_dim,
+        self.wte = VocabParallelEmbedding(config.vocab_size,
+                                          self.embed_dim,
                                           linear_method=linear_method)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList([
@@ -234,11 +235,9 @@ class GPTBigCodeForCausalLM(nn.Module):
         self.linear_method = linear_method
         self.transformer = GPTBigCodeModel(config, linear_method)
         # self.lm_head_weight = self.transformer.wte.weight
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
+                                      linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
 
@@ -274,7 +273,8 @@ class GPTBigCodeForCausalLM(nn.Module):
                      revision: Optional[str] = None):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "lm_head" in name and name not in params_dict:
                 continue
             if "wte" in name:

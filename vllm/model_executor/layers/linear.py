@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-from vllm.model_executor.layers.fused_moe import fused_moe
 from vllm.logger import init_logger
+from vllm.model_executor.layers.fused_moe import fused_moe
 from vllm.model_executor.parallel_utils.communication_op import (
     tensor_model_parallel_all_gather, tensor_model_parallel_all_reduce)
 from vllm.model_executor.parallel_utils.parallel_state import (
@@ -245,16 +245,22 @@ class ColumnParallelLinear(torch.nn.Module):
     def weight_loader(self,
                       param: Parameter,
                       loaded_weight: torch.Tensor,
-                      expert_id: int = 0):
+                      expert_id: int = -1):
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
         output_dim = getattr(param, "output_dim", None)
         param_data = param.data
         if self.num_experts > 1:
-            param_data = param_data[expert_id]
+            if expert_id >= 0:
+                param_data = param_data[expert_id]
+            # Loaded weight is packed at expert dim
+            else:
+                output_dim = output_dim + 1
+
         if output_dim is not None:
             if loaded_weight.shape[output_dim] % tp_size != 0:
-                raise ValueError("Size is not aligned with the quantized weight shape")
+                raise ValueError(
+                    "Size is not aligned with the quantized weight shape")
             shard_size = loaded_weight.shape[output_dim] // tp_size
             start_idx = tp_rank * shard_size
             loaded_weight = loaded_weight.narrow(output_dim, start_idx,
@@ -323,11 +329,15 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[int] = None,
-                      expert_id: int = 0):
+                      expert_id: int = -1):
         param_data = param.data
-        if self.num_experts > 1:
-            param_data = param_data[expert_id]
         output_dim = getattr(param, "output_dim", None)
+        if self.num_experts > 1:
+            if expert_id >= 0:
+                param_data = param_data[expert_id]
+            # Loaded weight is packed at expert dim
+            elif output_dim is not None:
+                output_dim = output_dim + 1
         if loaded_shard_id is None:
             # Loaded weight is already packed.
             if output_dim is None:
@@ -613,16 +623,21 @@ class RowParallelLinear(torch.nn.Module):
     def weight_loader(self,
                       param: Parameter,
                       loaded_weight: torch.Tensor,
-                      expert_id: int = 0):
+                      expert_id: int = -1):
         tp_rank = get_tensor_model_parallel_rank()
         tp_size = get_tensor_model_parallel_world_size()
         input_dim = getattr(param, "input_dim", None)
         param_data = param.data
         if self.num_experts > 1:
-            param_data = param_data[expert_id]
+            if expert_id >= 0:
+                param_data = param_data[expert_id]
+            # Loaded weight is packed at expert dim
+            elif input_dim is not None:
+                input_dim = input_dim + 1
         if input_dim is not None:
             if loaded_weight.shape[input_dim] % tp_size != 0:
-                raise ValueError("Size is not aligned with the quantized weight shape")
+                raise ValueError(
+                    "Size is not aligned with the quantized weight shape")
 
             shard_size = loaded_weight.shape[input_dim] // tp_size
             start_idx = tp_rank * shard_size

@@ -77,20 +77,21 @@ class PhiAttention(nn.Module):
                           tensor_model_parallel_world_size)
 
         # pylint: disable=C0103
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.q_proj = ColumnParallelLinear(
-                self.hidden_size, self.hidden_size,
-                bias=True,
-                linear_method=linear_method)
-            self.k_proj = ColumnParallelLinear(
-                self.hidden_size, self.hidden_size,
-                bias=True,
-                linear_method=linear_method)
-            self.v_proj = ColumnParallelLinear(
-                self.hidden_size, self.hidden_size,
-                bias=True,
-                linear_method=linear_method)
+            self.q_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.hidden_size,
+                                               bias=True,
+                                               linear_method=linear_method)
+            self.k_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.hidden_size,
+                                               bias=True,
+                                               linear_method=linear_method)
+            self.v_proj = ColumnParallelLinear(self.hidden_size,
+                                               self.hidden_size,
+                                               bias=True,
+                                               linear_method=linear_method)
         else:
             self.merge_weight = True
             self.qkv_proj = QKVParallelLinear(
@@ -301,12 +302,14 @@ class PhiForCausalLM(nn.Module):
             ("qkv_proj", "k_proj", "k"),
             ("qkv_proj", "v_proj", "v")
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
 
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
 

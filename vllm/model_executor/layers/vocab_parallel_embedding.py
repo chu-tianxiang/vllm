@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-
 from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 from vllm.model_executor.parallel_utils.utils import divide
 from vllm.model_executor.parallel_utils.communication_op import (
@@ -55,7 +54,7 @@ class VocabParallelEmbedding(torch.nn.Module):
                  num_embeddings: int,
                  embedding_dim: int,
                  params_dtype: Optional[torch.dtype] = None,
-                 linear_method = None,
+                 linear_method=None,
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE,
                  is_input_emb: bool = True):
@@ -78,38 +77,43 @@ class VocabParallelEmbedding(torch.nn.Module):
         self.num_embeddings_per_partition = (self.vocab_end_index -
                                              self.vocab_start_index)
         idx = 0 if is_input_emb else 1
-        if linear_method is None or not linear_method.quant_config.quant_vocab()[idx]:
+        if linear_method is None or not linear_method.quant_config.quant_vocab(
+        )[idx]:
             linear_method = UnquantizedLinearMethod()
         self.linear_method = linear_method
         self.linear_weights = self.linear_method.create_weights(
-            self.embedding_dim, self.num_embeddings_per_partition, self.embedding_dim,
-            self.num_embeddings_padded, params_dtype)
+            self.embedding_dim, self.num_embeddings_per_partition,
+            self.embedding_dim, self.num_embeddings_padded, params_dtype)
         for name, weight in self.linear_weights.items():
             if isinstance(weight, torch.nn.parameter.Parameter):
                 self.register_parameter(name, weight)
                 set_weight_attrs(weight, {"weight_loader": self.weight_loader})
-
 
     def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):
         output_dim = getattr(param, "output_dim", None)
         packed_dim = getattr(param, "packed_dim", None)
         if output_dim is not None:
             shard_offset = self.vocab_start_index
-            shard_size = min(self.vocab_end_index, self.org_vocab_size) - shard_offset
+            shard_size = min(self.vocab_end_index,
+                             self.org_vocab_size) - shard_offset
             if packed_dim == output_dim:
                 shard_size = shard_size // param.pack_factor
                 shard_offset = shard_offset // param.pack_factor
-            loaded_weight = loaded_weight.narrow(output_dim, shard_offset, shard_size)
+            loaded_weight = loaded_weight.narrow(output_dim, shard_offset,
+                                                 shard_size)
         if isinstance(param, torch.nn.parameter.UninitializedParameter):
             vocab_shape = list(loaded_weight.shape)
             if output_dim is not None:
                 if packed_dim == output_dim:
-                    vocab_shape[output_dim] = self.num_embeddings_per_partition // param.pack_factor
+                    vocab_shape[
+                        output_dim] = self.num_embeddings_per_partition // param.pack_factor
                 else:
                     vocab_shape[output_dim] = self.num_embeddings_per_partition
             param.materialize(vocab_shape, dtype=loaded_weight.dtype)
         if output_dim is not None:
-            param.data.narrow(output_dim, 0, loaded_weight.shape[output_dim]).copy_(loaded_weight)
+            param.data.narrow(
+                output_dim, 0,
+                loaded_weight.shape[output_dim]).copy_(loaded_weight)
         else:
             param.data.copy_(loaded_weight)
 
@@ -124,7 +128,8 @@ class VocabParallelEmbedding(torch.nn.Module):
         else:
             masked_input = input_
             # Get the embeddings.
-        output_parallel = self.linear_method.apply_embedding(self.linear_weights, masked_input)
+        output_parallel = self.linear_method.apply_embedding(
+            self.linear_weights, masked_input)
         # output_parallel = F.embedding(masked_input, self.weight)
         # Mask the output embedding.
         if self.tp_size > 1:
@@ -155,11 +160,12 @@ class ParallelLMHead(VocabParallelEmbedding):
                  embedding_dim: int,
                  bias: bool = False,
                  params_dtype: Optional[torch.dtype] = None,
-                 linear_method = None,
+                 linear_method=None,
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE):
-        super().__init__(num_embeddings, embedding_dim, params_dtype, linear_method,
-                         org_num_embeddings, padding_size, False)
+        super().__init__(num_embeddings, embedding_dim, params_dtype,
+                         linear_method, org_num_embeddings, padding_size,
+                         False)
         if bias:
             self.bias = Parameter(
                 torch.empty(self.num_embeddings_per_partition,
@@ -172,8 +178,7 @@ class ParallelLMHead(VocabParallelEmbedding):
             self.register_parameter("bias", None)
 
     def forward(self, input_):
-        logits = self.linear_method.apply_weights(
-            self.linear_weights, input_)
+        logits = self.linear_method.apply_weights(self.linear_weights, input_)
         if self.bias is not None:
             logits += self.bias
         return logits

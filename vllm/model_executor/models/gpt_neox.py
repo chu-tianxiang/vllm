@@ -190,11 +190,9 @@ class GPTNeoXModel(nn.Module):
         super().__init__()
         self.config = config
 
-        self.embed_in = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_in = VocabParallelEmbedding(config.vocab_size,
+                                               config.hidden_size,
+                                               linear_method=linear_method)
         self.layers = nn.ModuleList([
             GPTNeoXLayer(config, linear_method)
             for _ in range(config.num_hidden_layers)
@@ -233,11 +231,9 @@ class GPTNeoXForCausalLM(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.gpt_neox = GPTNeoXModel(config, linear_method)
-        self.embed_out = ParallelLMHead(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.embed_out = ParallelLMHead(config.vocab_size,
+                                        config.hidden_size,
+                                        linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
 
@@ -273,7 +269,8 @@ class GPTNeoXForCausalLM(nn.Module):
                      revision: Optional[str] = None):
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if ("attention.bias" in name or "attention.masked_bias" in name
                     or "rotary_emb.inv_freq" in name):
                 continue

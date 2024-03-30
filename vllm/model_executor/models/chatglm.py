@@ -360,8 +360,8 @@ class ChatGLMForCausalLM(nn.Module):
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
-        logits = self.logits_processor(self.transformer.output_layer, hidden_states,
-                                       sampling_metadata)
+        logits = self.logits_processor(self.transformer.output_layer,
+                                       hidden_states, sampling_metadata)
         return logits
 
     def sample(
@@ -379,7 +379,8 @@ class ChatGLMForCausalLM(nn.Module):
                      revision: Optional[str] = None):
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_pos_emb.inv_freq" in name:
                 continue
             if "word_embeddings" in name:

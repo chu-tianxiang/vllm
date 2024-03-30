@@ -8,8 +8,8 @@ from torch.nn.parameter import Parameter
 
 from vllm._C import ops
 from vllm.utils import is_hip
-from vllm.model_executor.layers.fused_moe import (moe_align_block_size,
-                                                  fused_moe, fused_topk)
+from vllm.model_executor.layers.fused_moe import (fused_moe, fused_topk,
+                                                  moe_align_block_size)
 from vllm.model_executor.layers.linear import (LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import (
@@ -22,14 +22,15 @@ def pemute_weight(scale, qzeros):
     # unpack and permute qweight
     zeros = torch.bitwise_right_shift(
         torch.unsqueeze(qzeros, -1),
-        torch.tensor(list(range(0, 32, 4)), dtype=torch.int32, device=qzeros.device),
-        ).bitwise_and(15) + 1
+        torch.tensor(
+            list(range(0, 32, 4)), dtype=torch.int32, device=qzeros.device),
+    ).bitwise_and(15) + 1
     zeros = zeros.view(zeros.shape[0], -1)
     scale = scale.reshape((-1, len(scale_perm)))[:, scale_perm]
     zeros = zeros.reshape((-1, len(scale_perm)))[:, scale_perm]
     scale = scale.reshape((-1, dim)).contiguous()
     zeros = zeros.reshape((-1, dim)).contiguous()
-    return scale, - zeros * scale
+    return scale, -zeros * scale
 
 
 class GPTQConfig(QuantizationConfig):
@@ -38,13 +39,8 @@ class GPTQConfig(QuantizationConfig):
     Reference: https://arxiv.org/abs/2210.17323
     """
 
-    def __init__(
-        self,
-        weight_bits: int,
-        group_size: int,
-        desc_act: bool,
-        sym: bool
-    ) -> None:
+    def __init__(self, weight_bits: int, group_size: int, desc_act: bool,
+                 sym: bool) -> None:
         self.weight_bits = weight_bits
         self.group_size = group_size
         self.desc_act = desc_act
@@ -121,14 +117,15 @@ class GPTQLinearMethod(LinearMethodBase):
 
     def __init__(self, quant_config: GPTQConfig):
         self.quant_config = quant_config
-        self.workspace = torch.zeros((512,), dtype=torch.int, device="cuda")
+        self.workspace = torch.zeros((512, ), dtype=torch.int, device="cuda")
 
     def fit_marlin(self, output_size):
         # Need fix for group_size = -1
         compute_capability = torch.cuda.get_device_capability()
-        return compute_capability[0] >= 8 and self.quant_config.group_size == 128 and (
-            self.quant_config.weight_bits == 4) and (
-            output_size % 256 == 0) and not is_hip()
+        return compute_capability[
+            0] >= 8 and self.quant_config.group_size == 128 and (
+                self.quant_config.weight_bits
+                == 4) and (output_size % 256 == 0) and not is_hip()
 
     def create_weights(
         self,
@@ -241,7 +238,8 @@ class GPTQLinearMethod(LinearMethodBase):
         reshaped_x = x.reshape(-1, x.shape[-1])
         # exllama needs to shuffle the weight after the weight is loaded
         # here we do the shuffle on first forward pass
-        if weights["exllama_state"] in (ExllamaState.UNINITIALIZED, ExllamaState.MARLIN_UNINITIALIZED):
+        if weights["exllama_state"] in (ExllamaState.UNINITIALIZED,
+                                        ExllamaState.MARLIN_UNINITIALIZED):
             if self.quant_config.desc_act:
                 weights["g_idx"] = torch.argsort(weights["g_idx"]).to(
                     torch.int)
@@ -253,7 +251,8 @@ class GPTQLinearMethod(LinearMethodBase):
                                  self.quant_config.weight_bits)
             else:
                 weights["exllama_state"] = ExllamaState.MARLIN_READY
-                weights["qweight"] = ops.gptq_to_marlin(weights["qweight"], weights["g_idx"])
+                weights["qweight"] = ops.gptq_to_marlin(
+                    weights["qweight"], weights["g_idx"])
                 weights["scales"], weights["qzeros"] = pemute_weight(
                     weights["scales"], weights["qzeros"])
 
@@ -262,14 +261,16 @@ class GPTQLinearMethod(LinearMethodBase):
             # reorder input for act-order model
             if weights["g_idx"].device != torch.device("meta"):
                 reshaped_x = reshaped_x[:, weights["g_idx"]]
-            ops.marlin_gemm_zero(reshaped_x, weights["qweight"], output.view(-1, output.shape[-1]),
-                                 weights["scales"], weights["qzeros"], self.workspace)
+            ops.marlin_gemm_zero(reshaped_x, weights["qweight"],
+                                 output.view(-1, output.shape[-1]),
+                                 weights["scales"], weights["qzeros"],
+                                 self.workspace)
         else:
-            output = ops.gptq_gemm(reshaped_x, weights["qweight"],
-                                   weights["qzeros"], weights["scales"],
-                                   weights["g_idx"],
-                                   weights["exllama_state"] == ExllamaState.READY,
-                                   self.quant_config.weight_bits)
+            output = ops.gptq_gemm(
+                reshaped_x, weights["qweight"], weights["qzeros"],
+                weights["scales"], weights["g_idx"],
+                weights["exllama_state"] == ExllamaState.READY,
+                self.quant_config.weight_bits)
         if bias is not None:
             output = output + bias
         return output.reshape(out_shape)
@@ -282,7 +283,8 @@ class GPTQLinearMethod(LinearMethodBase):
         # shuffle weights for exllama
         # ignore marlin now which doesn't support fuse moe yet
         for w in [w1, w2]:
-            if w["exllama_state"] in (ExllamaState.UNINITIALIZED, ExllamaState.MARLIN_UNINITIALIZED):
+            if w["exllama_state"] in (ExllamaState.UNINITIALIZED,
+                                      ExllamaState.MARLIN_UNINITIALIZED):
                 if self.quant_config.desc_act:
                     w["g_idx"] = torch.argsort(w["g_idx"],
                                                dim=-1).to(torch.int)

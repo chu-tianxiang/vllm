@@ -342,8 +342,7 @@ if not _is_neuron():
 
 package_data = {
     "vllm": [
-        "py.typed",
-        "model_executor/layers/quantization/hadamard.safetensors",
+        "py.typed", "model_executor/layers/quantization/hadamard.safetensors",
         "model_executor/layers/fused_moe/configs/*.json"
     ]
 }

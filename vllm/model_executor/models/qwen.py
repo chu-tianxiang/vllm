@@ -41,16 +41,17 @@ class QWenMLP(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
-        if linear_method is not None and not linear_method.quant_config.merge_weight():
+        if linear_method is not None and not linear_method.quant_config.merge_weight(
+        ):
             self.merge_weight = False
-            self.w2 = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
-            self.w1 = ColumnParallelLinear(
-                hidden_size, intermediate_size,
-                bias=False,
-                linear_method=linear_method)
+            self.w2 = ColumnParallelLinear(hidden_size,
+                                           intermediate_size,
+                                           bias=False,
+                                           linear_method=linear_method)
+            self.w1 = ColumnParallelLinear(hidden_size,
+                                           intermediate_size,
+                                           bias=False,
+                                           linear_method=linear_method)
         else:
             self.merge_weight = True
             self.gate_up_proj = MergedColumnParallelLinear(
@@ -201,11 +202,9 @@ class QWenModel(nn.Module):
         self.config = config
         self.vocab_size = config.vocab_size
 
-        self.wte = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            linear_method=linear_method
-        )
+        self.wte = VocabParallelEmbedding(config.vocab_size,
+                                          config.hidden_size,
+                                          linear_method=linear_method)
         self.h = nn.ModuleList([
             QWenBlock(config, linear_method)
             for _ in range(config.num_hidden_layers)
@@ -245,7 +244,8 @@ class QWenLMHeadModel(nn.Module):
         self.config = config
         self.linear_method = linear_method
         self.transformer = QWenModel(config, linear_method)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size,
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.hidden_size,
                                       linear_method=linear_method)
         self.logits_processor = LogitsProcessor(config.vocab_size)
         self.sampler = Sampler()
@@ -285,11 +285,13 @@ class QWenLMHeadModel(nn.Module):
             ("gate_up_proj", "w2", 0),
             ("gate_up_proj", "w1", 1),
         ]
-        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight():
+        if self.linear_method is not None and not self.linear_method.quant_config.merge_weight(
+        ):
             stacked_params_mapping = []
         params_dict = dict(self.named_parameters())
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             if "rotary_emb.inv_freq" in name:
                 continue
             for (param_name, weight_name, shard_id) in stacked_params_mapping:

@@ -312,11 +312,9 @@ class DbrxModel(nn.Module):
         linear_method: Optional[LinearMethodBase] = None,
     ):
         super().__init__()
-        self.wte = VocabParallelEmbedding(
-            config.vocab_size,
-            config.d_model,
-            linear_method=linear_method
-        )
+        self.wte = VocabParallelEmbedding(config.vocab_size,
+                                          config.d_model,
+                                          linear_method=linear_method)
         self.blocks = nn.ModuleList(
             [DbrxBlock(config, linear_method) for _ in range(config.n_layers)])
         self.norm_f = nn.LayerNorm(config.d_model, eps=1e-5)
@@ -358,13 +356,11 @@ class DbrxForCausalLM(nn.Module):
         self.linear_method = linear_method
         self.unpadded_vocab_size = config.vocab_size
         self.transformer = DbrxModel(config, linear_method)
-        self.lm_head = ParallelLMHead(
-            config.vocab_size,
-            config.d_model,
-            org_num_embeddings=config.vocab_size,
-            padding_size=DEFAULT_VOCAB_PADDING_SIZE,
-            linear_method=linear_method
-        )
+        self.lm_head = ParallelLMHead(config.vocab_size,
+                                      config.d_model,
+                                      org_num_embeddings=config.vocab_size,
+                                      padding_size=DEFAULT_VOCAB_PADDING_SIZE,
+                                      linear_method=linear_method)
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size)
         self.sampler = Sampler()
@@ -407,7 +403,8 @@ class DbrxForCausalLM(nn.Module):
         ) for weight_name in ["w1", "v1", "w2"]]
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in hf_model_weights_iterator(
-                model_name_or_path, cache_dir, load_format, revision, self.config):
+                model_name_or_path, cache_dir, load_format, revision,
+                self.config):
             for param_name, weight_name in expert_params_mapping:
                 if weight_name not in name:
                     continue
