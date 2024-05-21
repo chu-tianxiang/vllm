@@ -413,7 +413,13 @@ class Qwen2ForCausalLM(nn.Module):
                 # Skip loading extra bias for GPTQ models.
                 if name.endswith(".bias") and name not in params_dict:
                     continue
-                param = params_dict[name]
+                if name in params_dict:
+                    param = params_dict[name]
+                else:
+                    # Initialize the missing parameter
+                    param = torch.nn.Parameter(torch.empty_like(loaded_weight))
+                    params_dict[name] = param
+                    param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)
                 weight_loader(param, loaded_weight)
