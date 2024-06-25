@@ -4,9 +4,9 @@ psutil
 ray >= 2.9
 sentencepiece  # Required for LLaMA tokenizer.
 numpy
-torch == 2.1.2
+torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu118
 transformers >= 4.39.1  # Required for StarCoder2 & Llava.
-xformers == 0.0.23.post1  # Required for CUDA 12.1.
+xformers == 0.0.25  # Required for CUDA 12.1.
 fastapi
 uvicorn[standard]
 pydantic >= 2.0  # Required for OpenAI server.
